@@ -170,36 +170,30 @@ def get_home_page():
             <!-- Header -->
             <header class="mb-8 text-center">
                 <h1 class="text-3xl font-extrabold text-blue-500">Abstract Spaghetti Syndicate</h1>
-                <p class="text-gray-400 mt-2">Панель керування та налаштування принтера (Debug Mode)</p>
+                <p class="text-gray-400 mt-2">Панель керування та налаштування принтера (Dynamic Debug Mode)</p>
             </header>
 
             <!-- Grid Layout -->
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                 
-                <!-- Ліва колонка: Статус принтера -->
-                <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700">
-                    <h2 class="text-xl font-bold mb-4 border-b border-gray-700 pb-2">Монітор принтера</h2>
-                    <div class="space-y-4">
+                <!-- Ліва колонка: Статус принтера (Динамічний монітор) -->
+                <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700 flex flex-col h-[520px]">
+                    <h2 class="text-xl font-bold mb-4 border-b border-gray-700 pb-2 flex-shrink-0">Монітор принтера</h2>
+                    <div class="space-y-3 flex-shrink-0 mb-4">
                         <div>
-                            <span class="text-gray-400">Налаштований IP:</span>
-                            <span id="current-ip" class="font-mono text-blue-400 block">Завантаження...</span>
+                            <span class="text-gray-400 text-xs">Налаштований IP:</span>
+                            <span id="current-ip" class="font-mono text-blue-400 text-sm block">Завантаження...</span>
                         </div>
                         <div>
-                            <span class="text-gray-400">Статус:</span>
-                            <span id="connection-status" class="px-2 py-1 rounded text-xs font-bold bg-gray-700 text-gray-300">...</span>
+                            <span class="text-gray-400 text-xs block">Статус:</span>
+                            <span id="connection-status" class="inline-block px-2 py-1 rounded text-xs font-bold bg-gray-700 text-gray-300">...</span>
                         </div>
-                        <div class="grid grid-cols-2 gap-4 mt-4">
-                            <div class="bg-gray-900 p-4 rounded text-center">
-                                <p class="text-xs text-gray-500">Екструдер</p>
-                                <p id="temp-extruder" class="text-2xl font-bold text-red-500">0.0°C</p>
-                                <p id="target-extruder" class="text-xs text-gray-400">Ціль: 0°C</p>
-                            </div>
-                            <div class="bg-gray-900 p-4 rounded text-center">
-                                <p class="text-xs text-gray-500">Стіл</p>
-                                <p id="temp-bed" class="text-2xl font-bold text-yellow-500">0.0°C</p>
-                                <p id="target-bed" class="text-xs text-gray-400">Ціль: 0°C</p>
-                            </div>
-                        </div>
+                    </div>
+
+                    <!-- Контейнер для автогенерації показників датчиків -->
+                    <p class="text-xs font-semibold text-gray-400 flex-shrink-0 mb-2">Всі активні датчики принтера (Raw telemetry):</p>
+                    <div id="dynamic-sensors-container" class="flex-1 overflow-y-auto space-y-2 pr-1 scrollbar-thin scrollbar-thumb-gray-700">
+                        <p class="text-xs text-gray-500 text-center py-8">Очікування підключення до принтера...</p>
                     </div>
                 </div>
 
@@ -211,7 +205,7 @@ def get_home_page():
                         <h2 class="text-lg font-bold text-white mb-2">Спосіб 1: Зберегти IP у базу (SQLite)</h2>
                         <p class="text-xs text-gray-400 mb-4">Введіть IP вручну. Він запишеться у локальну базу даних.</p>
                         <div class="flex gap-2">
-                            <input id="manual-ip-input" type="text" placeholder="напр. 192.168.1.115" class="bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm flex-1 focus:outline-none focus:border-blue-500 text-mono">
+                            <input id="manual-ip-input" type="text" placeholder="напр. 192.168.1.115 або localhost" class="bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm flex-1 focus:outline-none focus:border-blue-500 text-mono text-white">
                             <button onclick="saveManualIP()" class="bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold px-4 py-2 rounded transition">Зберегти</button>
                         </div>
                     </div>
@@ -253,10 +247,54 @@ def get_home_page():
                         statusEl.className = 'px-2 py-1 rounded text-xs font-bold bg-rose-950 text-rose-300';
                     }
 
-                    document.getElementById('temp-extruder').innerText = data.telemetry.extruder_temp.toFixed(1) + '°C';
-                    document.getElementById('target-extruder').innerText = 'Ціль: ' + data.telemetry.extruder_target.toFixed(0) + '°C';
-                    document.getElementById('temp-bed').innerText = data.telemetry.bed_temp.toFixed(1) + '°C';
-                    document.getElementById('target-bed').innerText = 'Ціль: ' + data.telemetry.bed_target.toFixed(0) + '°C';
+                    // --- Динамічний рендер всіх датчиків ---
+                    const container = document.getElementById('dynamic-sensors-container');
+                    
+                    // Відфільтровуємо сервісний статус "print_state" з відображення датчиків
+                    const sensors = { ...data.telemetry };
+                    delete sensors["print_state"];
+
+                    if (Object.keys(sensors).length === 0) {
+                        container.innerHTML = '<p class="text-xs text-gray-500 text-center py-8">Немає активних датчиків. Налаштуйте підключення.</p>';
+                        return;
+                    }
+
+                    container.innerHTML = ''; // Очищаємо контейнер
+                    
+                    for (const [sensorName, sensorValue] of Object.entries(sensors)) {
+                        const card = document.createElement('div');
+                        card.className = 'bg-gray-900 p-3 rounded border border-gray-800';
+
+                        // Заголовок - назва об'єкта Klipper
+                        let html = `<p class="text-xs font-bold text-blue-400 border-b border-gray-800 pb-1 font-mono">${sensorName}</p>`;
+                        
+                        if (typeof sensorValue === 'object' && sensorValue !== null) {
+                            // Якщо об'єкт містить кілька підпараметрів
+                            html += `<div class="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 mt-2 text-xs">`;
+                            for (const [propName, propValue] of Object.entries(sensorValue)) {
+                                const displayValue = typeof propValue === 'number' ? propValue.toFixed(2) : propValue;
+                                html += `
+                                    <div class="flex justify-between py-0.5 border-b border-gray-900">
+                                        <span class="text-gray-500 font-mono text-[11px]">${propName}:</span>
+                                        <span class="font-bold text-gray-300 font-mono text-[11px]">${displayValue}</span>
+                                    </div>
+                                `;
+                            }
+                            html += `</div>`;
+                        } else {
+                            // Якщо це поодиноке значення
+                            const displayValue = typeof sensorValue === 'number' ? sensorValue.toFixed(2) : sensorValue;
+                            html += `
+                                <div class="flex justify-between text-xs mt-2">
+                                    <span class="text-gray-500 font-mono text-[11px]">value:</span>
+                                    <span class="font-bold text-gray-300 font-mono text-[11px]">${displayValue}</span>
+                                </div>
+                            `;
+                        }
+
+                        card.innerHTML = html;
+                        container.appendChild(card);
+                    }
 
                 } catch (e) {
                     console.error('Помилка опитування статусу:', e);
