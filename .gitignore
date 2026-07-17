@@ -1,0 +1,13 @@
+# Віртуальне оточення Python
+.venv/
+venv/
+ENV/
+
+# Кеш Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Налаштування VS Code (опціонально, але краще ігнорувати)
+.vscode/
