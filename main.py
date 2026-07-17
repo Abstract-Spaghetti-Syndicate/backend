@@ -1,6 +1,7 @@
 import sqlite3
 import socket
 import time
+import os
 import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
@@ -9,64 +10,89 @@ from pydantic import BaseModel
 from zeroconf import Zeroconf, ServiceBrowser, ServiceListener
 from klipper_client import KlipperClient
 
-# --- Робота з базою даних SQLite ---
+# --- Детальні логи Бази даних ---
+DB_FILE = "settings.db"
+
 def init_db():
-    conn = sqlite3.connect("settings.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+    db_exists = os.path.exists(DB_FILE)
+    print(f"[SQLITE LOG] Перевірка бази даних: '{DB_FILE}' (Існує: {db_exists}, повний шлях: {os.path.abspath(DB_FILE)})")
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+        print("[SQLITE LOG] Таблицю settings успішно ініціалізовано/перевірено.")
+    except Exception as e:
+        print(f"[SQLITE ERROR] Помилка ініціалізації бази: {e}")
 
 def get_saved_ip() -> str:
-    conn = sqlite3.connect("settings.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT value FROM settings WHERE key='printer_ip'")
-    row = cursor.fetchone()
-    conn.close()
-    return row[0] if row else ""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM settings WHERE key='printer_ip'")
+        row = cursor.fetchone()
+        conn.close()
+        ip = row[0] if row else ""
+        print(f"[SQLITE LOG] Отримано збережений IP з бази даних: '{ip}'")
+        return ip
+    except Exception as e:
+        print(f"[SQLITE ERROR] Не вдалося зчитати IP з бази: {e}")
+        return ""
 
 def save_ip_to_db(ip: str):
-    conn = sqlite3.connect("settings.db")
-    cursor = conn.cursor()
-    cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('printer_ip', ?)", (ip,))
-    conn.commit()
-    conn.close()
+    try:
+        print(f"[SQLITE LOG] Запис IP '{ip}' в базу даних...")
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('printer_ip', ?)", (ip,))
+        conn.commit()
+        conn.close()
+        print("[SQLITE LOG] IP успішно збережено в SQLite.")
+    except Exception as e:
+        print(f"[SQLITE ERROR] Не вдалося записати IP в базу: {e}")
 
 
-# --- Реалізація Автопошуку mDNS (Zeroconf) ---
+# --- Детальні логи автопошуку (mDNS / Zeroconf) ---
 class MoonrakerListener(ServiceListener):
     def __init__(self):
         self.printers = []
 
     def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
+        print(f"[mDNS SCAN LOG] Знайдено потенційний сервіс: '{name}' (тип: {type_})")
         info = zc.get_service_info(type_, name)
         if info:
-            # Конвертуємо байти IP-адреси у текстовий формат (наприклад, 192.168.1.5)
             addresses = [socket.inet_ntoa(addr) for addr in info.addresses]
+            print(f"[mDNS SCAN LOG] Зчитано деталі сервісу: {name} -> IP={addresses}, Port={info.port}")
             self.printers.append({
                 "name": name.split('.')[0],
                 "ip": addresses[0] if addresses else "unknown",
                 "port": info.port
             })
+        else:
+            print(f"[mDNS SCAN LOG] Попередження: Не вдалося зчитати деталі (IP/Port) для сервісу: {name}")
 
     def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        pass
+        print(f"[mDNS SCAN LOG] Оновлено інформацію сервісу: '{name}'")
 
     def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        pass
+        print(f"[mDNS SCAN LOG] Видалено сервіс: '{name}'")
 
 def scan_network_for_printers() -> list:
+    print("[mDNS SCAN LOG] Запуск сканування локальної мережі...")
     zc = Zeroconf()
     listener = MoonrakerListener()
-    # Шукаємо пристрої, які оголошують сервіс Moonraker/Klipper
+    # Шукаємо пристрої Moonraker Klipper
     browser = ServiceBrowser(zc, "_moonraker._tcp.local.", listener)
-    time.sleep(2.0)  # Даємо сканеру 2 секунди, щоб зібрати відповіді в мережі
+    print("[mDNS SCAN LOG] Очікування відповідей від пристроїв (2.0 секунди)...")
+    time.sleep(2.0)
     zc.close()
+    print(f"[mDNS SCAN LOG] Сканування завершено. Знайдено пристроїв: {len(listener.printers)}")
     return listener.printers
 
 
@@ -79,14 +105,15 @@ klipper = KlipperClient(host=saved_ip)
 # --- Життєвий цикл FastAPI ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Старт фонового процесу підключення
+    print("[APP LIFESPAN] Веб-сервер запускається. Запуск фонового процесу WebSocket-клієнта...")
     listener_task = asyncio.create_task(klipper.start_websocket_listener())
     yield
-    # Завершення роботи
+    print("[APP LIFESPAN] Веб-сервер зупиняється. Зупинка фонового процесу...")
     listener_task.cancel()
     await klipper.http_client.aclose()
+    print("[APP LIFESPAN] Всі ресурси вивільнено.")
 
-app = FastAPI(title="Klipper Smart Gateway", lifespan=lifespan)
+app = FastAPI(title="Klipper Smart Gateway with Logs", lifespan=lifespan)
 
 
 # --- Моделі даних ---
@@ -98,7 +125,6 @@ class IPRequest(BaseModel):
 
 @app.get("/printer/status")
 async def get_status():
-    """Повертає поточний статус і телеметрію"""
     return {
         "configured_ip": klipper.host,
         "connected": klipper.is_connected,
@@ -107,22 +133,23 @@ async def get_status():
 
 @app.post("/settings/printer-ip")
 async def update_printer_ip(payload: IPRequest):
-    """Спосіб 1: Зберегти IP в базу та перепідключитися"""
     ip = payload.ip.strip()
+    print(f"[API ROUTE] Запит на зміну IP: '{ip}'")
     if not ip:
         raise HTTPException(status_code=400, detail="IP не може бути пустим")
     
-    save_ip_to_db(ip)  # Зберігаємо в SQLite
-    await klipper.update_host_and_reconnect(ip)  # Даємо команду клієнту
+    save_ip_to_db(ip)
+    await klipper.update_host_and_reconnect(ip)
     return {"status": "success", "saved_ip": ip}
 
 @app.post("/settings/scan")
 def scan_printers():
-    """Спосіб 2: Автоматичний пошук принтерів у мережі"""
+    print("[API ROUTE] Запит на сканування мережі.")
     try:
         found = scan_network_for_printers()
         return {"status": "success", "printers": found}
     except Exception as e:
+        print(f"[API ERROR] Помилка під час сканування: {e}")
         raise HTTPException(status_code=500, detail=f"Помилка сканування: {str(e)}")
 
 
@@ -135,7 +162,7 @@ def get_home_page():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Filament & Printer Hub</title>
+        <title>Filament & Printer Hub with Logs</title>
         <script src="https://cdn.tailwindcss.com"></script>
     </head>
     <body class="bg-gray-900 text-gray-100 font-sans min-h-screen">
@@ -143,7 +170,7 @@ def get_home_page():
             <!-- Header -->
             <header class="mb-8 text-center">
                 <h1 class="text-3xl font-extrabold text-blue-500">Abstract Spaghetti Syndicate</h1>
-                <p class="text-gray-400 mt-2">Панель керування та налаштування принтера</p>
+                <p class="text-gray-400 mt-2">Панель керування та налаштування принтера (Debug Mode)</p>
             </header>
 
             <!-- Grid Layout -->
