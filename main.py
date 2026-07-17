@@ -15,7 +15,7 @@ DB_FILE = "settings.db"
 
 def init_db():
     db_exists = os.path.exists(DB_FILE)
-    print(f"[SQLITE LOG] Перевірка бази даних: '{DB_FILE}' (Існує: {db_exists}, повний шлях: {os.path.abspath(DB_FILE)})")
+    print(f"[SQLITE LOG] Перевірка бази даних: '{DB_FILE}' (Існує: {db_exists}, повний шлях: {os.path.abspath(DB_FILE)})", flush=True)
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
@@ -27,9 +27,9 @@ def init_db():
         """)
         conn.commit()
         conn.close()
-        print("[SQLITE LOG] Таблицю settings успішно ініціалізовано/перевірено.")
+        print("[SQLITE LOG] Таблицю settings успішно ініціалізовано/перевірено.", flush=True)
     except Exception as e:
-        print(f"[SQLITE ERROR] Помилка ініціалізації бази: {e}")
+        print(f"[SQLITE ERROR] Помилка ініціалізації бази: {e}", flush=True)
 
 def get_saved_ip() -> str:
     try:
@@ -39,23 +39,23 @@ def get_saved_ip() -> str:
         row = cursor.fetchone()
         conn.close()
         ip = row[0] if row else ""
-        print(f"[SQLITE LOG] Отримано збережений IP з бази даних: '{ip}'")
+        print(f"[SQLITE LOG] Отримано збережений IP з бази даних: '{ip}'", flush=True)
         return ip
     except Exception as e:
-        print(f"[SQLITE ERROR] Не вдалося зчитати IP з бази: {e}")
+        print(f"[SQLITE ERROR] Не вдалося зчитати IP з бази: {e}", flush=True)
         return ""
 
 def save_ip_to_db(ip: str):
     try:
-        print(f"[SQLITE LOG] Запис IP '{ip}' в базу даних...")
+        print(f"[SQLITE LOG] Запис IP '{ip}' в базу даних...", flush=True)
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('printer_ip', ?)", (ip,))
         conn.commit()
         conn.close()
-        print("[SQLITE LOG] IP успішно збережено в SQLite.")
+        print("[SQLITE LOG] IP успішно збережено в SQLite.", flush=True)
     except Exception as e:
-        print(f"[SQLITE ERROR] Не вдалося записати IP в базу: {e}")
+        print(f"[SQLITE ERROR] Не вдалося записати IP в базу: {e}", flush=True)
 
 
 # --- Детальні логи автопошуку (mDNS / Zeroconf) ---
@@ -64,35 +64,35 @@ class MoonrakerListener(ServiceListener):
         self.printers = []
 
     def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        print(f"[mDNS SCAN LOG] Знайдено потенційний сервіс: '{name}' (тип: {type_})")
+        print(f"[mDNS SCAN LOG] Знайдено потенційний сервіс: '{name}' (тип: {type_})", flush=True)
         info = zc.get_service_info(type_, name)
         if info:
             addresses = [socket.inet_ntoa(addr) for addr in info.addresses]
-            print(f"[mDNS SCAN LOG] Зчитано деталі сервісу: {name} -> IP={addresses}, Port={info.port}")
+            print(f"[mDNS SCAN LOG] Зчитано деталі сервісу: {name} -> IP={addresses}, Port={info.port}", flush=True)
             self.printers.append({
                 "name": name.split('.')[0],
                 "ip": addresses[0] if addresses else "unknown",
                 "port": info.port
             })
         else:
-            print(f"[mDNS SCAN LOG] Попередження: Не вдалося зчитати деталі (IP/Port) для сервісу: {name}")
+            print(f"[mDNS SCAN LOG] Попередження: Не вдалося зчитати деталі (IP/Port) для сервісу: {name}", flush=True)
 
     def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        print(f"[mDNS SCAN LOG] Оновлено інформацію сервісу: '{name}'")
+        print(f"[mDNS SCAN LOG] Оновлено інформацію сервісу: '{name}'", flush=True)
 
     def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        print(f"[mDNS SCAN LOG] Видалено сервіс: '{name}'")
+        print(f"[mDNS SCAN LOG] Видалено сервіс: '{name}'", flush=True)
 
 def scan_network_for_printers() -> list:
-    print("[mDNS SCAN LOG] Запуск сканування локальної мережі...")
+    print("[mDNS SCAN LOG] Запуск сканування локальної мережі...", flush=True)
     zc = Zeroconf()
     listener = MoonrakerListener()
     # Шукаємо пристрої Moonraker Klipper
     browser = ServiceBrowser(zc, "_moonraker._tcp.local.", listener)
-    print("[mDNS SCAN LOG] Очікування відповідей від пристроїв (2.0 секунди)...")
+    print("[mDNS SCAN LOG] Очікування відповідей від пристроїв (2.0 секунди)...", flush=True)
     time.sleep(2.0)
     zc.close()
-    print(f"[mDNS SCAN LOG] Сканування завершено. Знайдено пристроїв: {len(listener.printers)}")
+    print(f"[mDNS SCAN LOG] Сканування завершено. Знайдено пристроїв: {len(listener.printers)}", flush=True)
     return listener.printers
 
 
@@ -105,13 +105,13 @@ klipper = KlipperClient(host=saved_ip)
 # --- Життєвий цикл FastAPI ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("[APP LIFESPAN] Веб-сервер запускається. Запуск фонового процесу WebSocket-клієнта...")
+    print("[APP LIFESPAN] Веб-сервер запускається. Запуск фонового процесу WebSocket-клієнта...", flush=True)
     listener_task = asyncio.create_task(klipper.start_websocket_listener())
     yield
-    print("[APP LIFESPAN] Веб-сервер зупиняється. Зупинка фонового процесу...")
+    print("[APP LIFESPAN] Веб-сервер зупиняється. Зупинка фонового процесу...", flush=True)
     listener_task.cancel()
     await klipper.http_client.aclose()
-    print("[APP LIFESPAN] Всі ресурси вивільнено.")
+    print("[APP LIFESPAN] Всі ресурси вивільнено.", flush=True)
 
 app = FastAPI(title="Klipper Smart Gateway with Logs", lifespan=lifespan)
 
@@ -134,7 +134,7 @@ async def get_status():
 @app.post("/settings/printer-ip")
 async def update_printer_ip(payload: IPRequest):
     ip = payload.ip.strip()
-    print(f"[API ROUTE] Запит на зміну IP: '{ip}'")
+    print(f"[API ROUTE] Запит на зміну IP: '{ip}'", flush=True)
     if not ip:
         raise HTTPException(status_code=400, detail="IP не може бути пустим")
     
@@ -144,12 +144,12 @@ async def update_printer_ip(payload: IPRequest):
 
 @app.post("/settings/scan")
 def scan_printers():
-    print("[API ROUTE] Запит на сканування мережі.")
+    print("[API ROUTE] Запит на сканування мережі.", flush=True)
     try:
         found = scan_network_for_printers()
         return {"status": "success", "printers": found}
     except Exception as e:
-        print(f"[API ERROR] Помилка під час сканування: {e}")
+        print(f"[API ERROR] Помилка під час сканування: {e}", flush=True)
         raise HTTPException(status_code=500, detail=f"Помилка сканування: {str(e)}")
 
 
@@ -246,10 +246,10 @@ def get_home_page():
                     
                     const statusEl = document.getElementById('connection-status');
                     if (data.connected) {
-                        statusEl.innerText = 'ПІДКЛЮЧЕНО (' + data.telemetry.print_state.toUpperCase() + ')';
+                        statusEl.innerText = "ПІДКЛЮЧЕНО (" + data.telemetry.print_state.toUpperCase() + ")";
                         statusEl.className = 'px-2 py-1 rounded text-xs font-bold bg-emerald-900 text-emerald-300';
                     } else {
-                        statusEl.innerText = 'НЕМАЄ ЗВ\'ЯЗКУ (' + data.telemetry.print_state.toUpperCase() + ')';
+                        statusEl.innerText = "НЕМАЄ ЗВ'ЯЗКУ (" + data.telemetry.print_state.toUpperCase() + ")";
                         statusEl.className = 'px-2 py-1 rounded text-xs font-bold bg-rose-950 text-rose-300';
                     }
 
