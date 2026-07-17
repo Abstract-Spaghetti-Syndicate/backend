@@ -113,7 +113,7 @@ async def lifespan(app: FastAPI):
     await klipper.http_client.aclose()
     print("[APP LIFESPAN] Всі ресурси вивільнено.", flush=True)
 
-app = FastAPI(title="Klipper Smart Gateway with Logs", lifespan=lifespan)
+app = FastAPI(title="Klipper Smart Gateway Architecture", lifespan=lifespan)
 
 
 # --- Моделі даних ---
@@ -162,7 +162,7 @@ def get_home_page():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Filament & Printer Hub with Logs</title>
+        <title>Unified Printer Hub</title>
         <script src="https://cdn.tailwindcss.com"></script>
     </head>
     <body class="bg-gray-900 text-gray-100 font-sans min-h-screen">
@@ -170,30 +170,44 @@ def get_home_page():
             <!-- Header -->
             <header class="mb-8 text-center">
                 <h1 class="text-3xl font-extrabold text-blue-500">Abstract Spaghetti Syndicate</h1>
-                <p class="text-gray-400 mt-2">Панель керування та налаштування принтера (Dynamic Debug Mode)</p>
+                <p class="text-gray-400 mt-2">Панель керування та налаштування принтера (Unified Architecture)</p>
             </header>
 
             <!-- Grid Layout -->
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                 
-                <!-- Ліва колонка: Статус принтера (Динамічний монітор) -->
-                <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700 flex flex-col h-[520px]">
+                <!-- Ліва колонка: Статус принтера -->
+                <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700 flex flex-col h-[550px]">
                     <h2 class="text-xl font-bold mb-4 border-b border-gray-700 pb-2 flex-shrink-0">Монітор принтера</h2>
-                    <div class="space-y-3 flex-shrink-0 mb-4">
-                        <div>
-                            <span class="text-gray-400 text-xs">Налаштований IP:</span>
-                            <span id="current-ip" class="font-mono text-blue-400 text-sm block">Завантаження...</span>
+                    <div class="space-y-2 flex-shrink-0 mb-3">
+                        <div class="flex justify-between items-center text-xs">
+                            <span class="text-gray-400">IP принтера:</span>
+                            <span id="current-ip" class="font-mono text-blue-400 font-bold">...</span>
                         </div>
-                        <div>
-                            <span class="text-gray-400 text-xs block">Статус:</span>
-                            <span id="connection-status" class="inline-block px-2 py-1 rounded text-xs font-bold bg-gray-700 text-gray-300">...</span>
+                        <div class="flex justify-between items-center text-xs">
+                            <span class="text-gray-400">Статус:</span>
+                            <span id="connection-status" class="inline-block px-2 py-0.5 rounded text-[10px] font-bold bg-gray-700 text-gray-300">...</span>
                         </div>
                     </div>
 
-                    <!-- Контейнер для автогенерації показників датчиків -->
-                    <p class="text-xs font-semibold text-gray-400 flex-shrink-0 mb-2">Всі активні датчики принтера (Raw telemetry):</p>
+                    <!-- Стандартизований вивід температур (Швидкий погляд) -->
+                    <div class="grid grid-cols-2 gap-3 flex-shrink-0 mb-4">
+                        <div class="bg-gray-900 p-3 rounded text-center border border-gray-800">
+                            <p class="text-[10px] text-gray-500 font-bold uppercase">Екструдер</p>
+                            <p id="temp-extruder" class="text-xl font-extrabold text-red-500">0.0°C</p>
+                            <p id="target-extruder" class="text-[10px] text-gray-400">Ціль: 0°C</p>
+                        </div>
+                        <div class="bg-gray-900 p-3 rounded text-center border border-gray-800">
+                            <p class="text-[10px] text-gray-500 font-bold uppercase">Стіл друку</p>
+                            <p id="temp-bed" class="text-xl font-extrabold text-yellow-500">0.0°C</p>
+                            <p id="target-bed" class="text-[10px] text-gray-400">Ціль: 0°C</p>
+                        </div>
+                    </div>
+
+                    <!-- Контейнер для автогенерації інших датчиків (Raw debug) -->
+                    <p class="text-[11px] font-bold text-gray-400 flex-shrink-0 mb-1.5 uppercase tracking-wider">Усі датчики системи (Raw Telemetry):</p>
                     <div id="dynamic-sensors-container" class="flex-1 overflow-y-auto space-y-2 pr-1 scrollbar-thin scrollbar-thumb-gray-700">
-                        <p class="text-xs text-gray-500 text-center py-8">Очікування підключення до принтера...</p>
+                        <p class="text-xs text-gray-500 text-center py-8">Очікування даних від принтера...</p>
                     </div>
                 </div>
 
@@ -203,7 +217,7 @@ def get_home_page():
                     <!-- Спосіб 1: Ручне введення та збереження у базу даних -->
                     <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700">
                         <h2 class="text-lg font-bold text-white mb-2">Спосіб 1: Зберегти IP у базу (SQLite)</h2>
-                        <p class="text-xs text-gray-400 mb-4">Введіть IP вручну. Він запишеться у локальну базу даних.</p>
+                        <p class="text-xs text-gray-400 mb-4">Введіть IP вручную. Він запишеться у локальну базу даних.</p>
                         <div class="flex gap-2">
                             <input id="manual-ip-input" type="text" placeholder="напр. 192.168.1.115 або localhost" class="bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm flex-1 focus:outline-none focus:border-blue-500 text-mono text-white">
                             <button onclick="saveManualIP()" class="bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold px-4 py-2 rounded transition">Зберегти</button>
@@ -241,53 +255,53 @@ def get_home_page():
                     const statusEl = document.getElementById('connection-status');
                     if (data.connected) {
                         statusEl.innerText = "ПІДКЛЮЧЕНО (" + data.telemetry.print_state.toUpperCase() + ")";
-                        statusEl.className = 'px-2 py-1 rounded text-xs font-bold bg-emerald-900 text-emerald-300';
+                        statusEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-900 text-emerald-300';
                     } else {
                         statusEl.innerText = "НЕМАЄ ЗВ'ЯЗКУ (" + data.telemetry.print_state.toUpperCase() + ")";
-                        statusEl.className = 'px-2 py-1 rounded text-xs font-bold bg-rose-950 text-rose-300';
+                        statusEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-rose-950 text-rose-300';
                     }
 
-                    // --- Динамічний рендер всіх датчиків ---
-                    const container = document.getElementById('dynamic-sensors-container');
-                    
-                    // Відфільтровуємо сервісний статус "print_state" з відображення датчиків
-                    const sensors = { ...data.telemetry };
-                    delete sensors["print_state"];
+                    // 1. Рендеримо стандартизовані показники (temps)
+                    document.getElementById('temp-extruder').innerText = data.telemetry.temps.extruder.current.toFixed(1) + '°C';
+                    document.getElementById('target-extruder').innerText = 'Ціль: ' + data.telemetry.temps.extruder.target.toFixed(0) + '°C';
+                    document.getElementById('temp-bed').innerText = data.telemetry.temps.bed.current.toFixed(1) + '°C';
+                    document.getElementById('target-bed').innerText = 'Ціль: ' + data.telemetry.temps.bed.target.toFixed(0) + '°C';
 
-                    if (Object.keys(sensors).length === 0) {
-                        container.innerHTML = '<p class="text-xs text-gray-500 text-center py-8">Немає активних датчиків. Налаштуйте підключення.</p>';
+                    // 2. Рендеримо решту сирих даних у дебаг-панель
+                    const container = document.getElementById('dynamic-sensors-container');
+                    const rawTelemetry = data.telemetry.raw_telemetry || {};
+
+                    if (Object.keys(rawTelemetry).length === 0) {
+                        container.innerHTML = '<p class="text-xs text-gray-500 text-center py-8">Немає додаткових активних датчиків.</p>';
                         return;
                     }
 
-                    container.innerHTML = ''; // Очищаємо контейнер
+                    container.innerHTML = ''; // Очищаємо
                     
-                    for (const [sensorName, sensorValue] of Object.entries(sensors)) {
+                    for (const [sensorName, sensorValue] of Object.entries(rawTelemetry)) {
                         const card = document.createElement('div');
-                        card.className = 'bg-gray-900 p-3 rounded border border-gray-800';
+                        card.className = 'bg-gray-900 p-2.5 rounded border border-gray-800';
 
-                        // Заголовок - назва об'єкта Klipper
-                        let html = `<p class="text-xs font-bold text-blue-400 border-b border-gray-800 pb-1 font-mono">${sensorName}</p>`;
+                        let html = `<p class="text-[11px] font-bold text-blue-400 border-b border-gray-800 pb-0.5 font-mono">${sensorName}</p>`;
                         
                         if (typeof sensorValue === 'object' && sensorValue !== null) {
-                            // Якщо об'єкт містить кілька підпараметрів
-                            html += `<div class="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 mt-2 text-xs">`;
+                            html += `<div class="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-0.5 mt-1 text-[11px]">`;
                             for (const [propName, propValue] of Object.entries(sensorValue)) {
-                                const displayValue = typeof propValue === 'number' ? propValue.toFixed(2) : propValue;
+                                const displayValue = typeof propValue === 'number' ? propValue.toFixed(1) : propValue;
                                 html += `
-                                    <div class="flex justify-between py-0.5 border-b border-gray-900">
-                                        <span class="text-gray-500 font-mono text-[11px]">${propName}:</span>
-                                        <span class="font-bold text-gray-300 font-mono text-[11px]">${displayValue}</span>
+                                    <div class="flex justify-between py-0.5 border-b border-gray-950">
+                                        <span class="text-gray-500 font-mono text-[10px]">${propName}:</span>
+                                        <span class="font-bold text-gray-300 font-mono text-[10px]">${displayValue}</span>
                                     </div>
                                 `;
                             }
                             html += `</div>`;
                         } else {
-                            // Якщо це поодиноке значення
-                            const displayValue = typeof sensorValue === 'number' ? sensorValue.toFixed(2) : sensorValue;
+                            const displayValue = typeof sensorValue === 'number' ? sensorValue.toFixed(1) : sensorValue;
                             html += `
-                                <div class="flex justify-between text-xs mt-2">
-                                    <span class="text-gray-500 font-mono text-[11px]">value:</span>
-                                    <span class="font-bold text-gray-300 font-mono text-[11px]">${displayValue}</span>
+                                <div class="flex justify-between text-[11px] mt-1">
+                                    <span class="text-gray-500 font-mono text-[10px]">value:</span>
+                                    <span class="font-bold text-gray-300 font-mono text-[10px]">${displayValue}</span>
                                 </div>
                             `;
                         }
