@@ -15,17 +15,15 @@ from pydantic import BaseModel
 from zeroconf import Zeroconf, ServiceBrowser, ServiceListener
 from klipper_client import KlipperClient
 
-def init_db():
-    # Додайте цей рядок першим всередині функції:
-    os.makedirs("data", exist_ok=True)
-    
-    conn = sqlite3.connect(DB_FILE)
-    # ... далі весь інший код функції залишається без змін ...
-
 # --- Налаштування Бази даних ---
-DB_FILE = "data/settings.db"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_DIR = os.path.join(BASE_DIR, "data")
+DB_FILE = os.path.join(DB_DIR, "settings.db")
 
 def init_db():
+    # Створюємо абсолютний шлях до папки data, якщо її немає
+    os.makedirs(DB_DIR, exist_ok=True)
+    
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("PRAGMA foreign_keys = ON")
