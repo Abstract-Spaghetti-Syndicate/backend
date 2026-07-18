@@ -2,128 +2,363 @@ import sqlite3
 import socket
 import time
 import os
+import hashlib
 import asyncio
+from datetime import datetime
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Depends, Request
 from fastapi.responses import HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from zeroconf import Zeroconf, ServiceBrowser, ServiceListener
 from klipper_client import KlipperClient
 
-# --- Детальні логи Бази даних ---
+# --- Налаштування Бази даних ---
 DB_FILE = "settings.db"
 
 def init_db():
-    db_exists = os.path.exists(DB_FILE)
-    print(f"[SQLITE LOG] Перевірка бази даних: '{DB_FILE}' (Існує: {db_exists}, повний шлях: {os.path.abspath(DB_FILE)})", flush=True)
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    # Таблиця налаштувань
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
+    # Таблиця користувачів
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT UNIQUE,
+            password_hash TEXT
+        )
+    """)
+    # Таблиця активних сесій
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sessions (
+            token TEXT PRIMARY KEY,
+            user_id INTEGER,
+            ip_address TEXT,
+            user_agent TEXT,
+            created_at REAL,
+            expires_at REAL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+    """)
+    
+    # Спроба додати нові колонки до таблиці сесій, якщо база вже існувала раніше
     try:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )
-        """)
-        conn.commit()
-        conn.close()
-        print("[SQLITE LOG] Таблицю settings успішно ініціалізовано/перевірено.", flush=True)
-    except Exception as e:
-        print(f"[SQLITE ERROR] Помилка ініціалізації бази: {e}", flush=True)
+        cursor.execute("ALTER TABLE sessions ADD COLUMN ip_address TEXT")
+        cursor.execute("ALTER TABLE sessions ADD COLUMN user_agent TEXT")
+        cursor.execute("ALTER TABLE sessions ADD COLUMN created_at REAL")
+    except sqlite3.OperationalError:
+        pass  # Колонки вже існують
+        
+    conn.commit()
+    conn.close()
+    print("[SQLITE LOG] Базу даних успішно перевірено та оновлено.", flush=True)
 
-def get_saved_ip() -> str:
+# --- Парсер User-Agent для відображення зрозумілої назви пристрою ---
+def parse_user_agent(ua_string: str) -> str:
+    if not ua_string:
+        return "Невідомий пристрій"
+    
+    ua_string = ua_string.lower()
+    
+    # 1. Визначаємо операційну систему
+    os_name = "Unknown OS"
+    if "windows" in ua_string:
+        os_name = "Windows"
+    elif "android" in ua_string:
+        os_name = "Android"
+    elif "iphone" in ua_string or "ipad" in ua_string or "ipod" in ua_string:
+        os_name = "iOS"
+    elif "macintosh" in ua_string or "mac os" in ua_string:
+        os_name = "macOS"
+    elif "linux" in ua_string:
+        os_name = "Linux"
+    elif "x11" in ua_string:
+        os_name = "Unix/Linux"
+        
+    # 2. Визначаємо браузер (порядок дуже важливий - від унікальних до загальних)
+    browser_name = "Unknown Browser"
+    
+    if "vivaldi" in ua_string:
+        browser_name = "Vivaldi"
+    elif "yabrowser" in ua_string:
+        browser_name = "Yandex Browser"
+    elif "opr" in ua_string or "opera" in ua_string or "opios" in ua_string:
+        browser_name = "Opera"
+    elif "edg" in ua_string or "edge" in ua_string or "edgios" in ua_string or "edga" in ua_string:
+        browser_name = "Edge"
+    elif "brave" in ua_string:
+        browser_name = "Brave"
+    elif "electron" in ua_string:
+        browser_name = "Electron App"
+    elif "vscode" in ua_string or "code/" in ua_string:
+        browser_name = "VS Code Browser"
+    elif "firefox" in ua_string or "fxios" in ua_string:
+        browser_name = "Firefox"
+    elif "chrome" in ua_string or "chromium" in ua_string or "crios" in ua_string:
+        # Усі інші Chromium-браузери визначаються як Chrome
+        browser_name = "Chrome"
+    elif "safari" in ua_string:
+        # Перевіряється останнім, оскільки більшість браузерів містять слово "Safari" у рядку
+        browser_name = "Safari"
+        
+    return f"{browser_name} ({os_name})"
+
+# --- Безпечне хешування паролів (PBKDF2) ---
+def hash_password(password: str) -> str:
+    salt = os.urandom(16)
+    pwdhash = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 100000)
+    return salt.hex() + ":" + pwdhash.hex()
+
+def verify_password(stored_password: str, provided_password: str) -> bool:
     try:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute("SELECT value FROM settings WHERE key='printer_ip'")
-        row = cursor.fetchone()
-        conn.close()
-        ip = row[0] if row else ""
-        print(f"[SQLITE LOG] Отримано збережений IP з бази даних: '{ip}'", flush=True)
-        return ip
-    except Exception as e:
-        print(f"[SQLITE ERROR] Не вдалося зчитати IP з бази: {e}", flush=True)
-        return ""
+        salt_hex, hash_hex = stored_password.split(":")
+        salt = bytes.fromhex(salt_hex)
+        pwdhash = hashlib.pbkdf2_hmac("sha256", provided_password.encode("utf-8"), salt, 100000)
+        return pwdhash.hex() == hash_hex
+    except Exception:
+        return False
+
+# --- Керування сесіями ---
+def create_session(user_id: int, ip_address: str, user_agent: str) -> str:
+    token = os.urandom(24).hex()
+    created_at = time.time()
+    expires_at = created_at + (30 * 24 * 3600)  # Токен діє 30 днів
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO sessions (token, user_id, ip_address, user_agent, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (token, user_id, ip_address, user_agent, created_at, expires_at)
+    )
+    conn.commit()
+    conn.close()
+    return token
+
+def verify_session_token(token: str) -> int:
+    if not token:
+        raise HTTPException(status_code=401, detail="Токен відсутній")
+    
+    if token.startswith("Bearer "):
+        token = token[7:]
+
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, expires_at FROM sessions WHERE token=?", (token,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        raise HTTPException(status_code=401, detail="Невірний або застарілий токен")
+    
+    user_id, expires_at = row
+    if time.time() > expires_at:
+        raise HTTPException(status_code=401, detail="Термін дії сесії закінчився")
+    
+    return user_id
+
+async def get_current_user(authorization: str = Header(None)):
+    return verify_session_token(authorization)
+
+
+# --- Робота з IP принтера ---
+def get_saved_ip() -> str:
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE key='printer_ip'")
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else ""
 
 def save_ip_to_db(ip: str):
-    try:
-        print(f"[SQLITE LOG] Запис IP '{ip}' в базу даних...", flush=True)
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('printer_ip', ?)", (ip,))
-        conn.commit()
-        conn.close()
-        print("[SQLITE LOG] IP успішно збережено в SQLite.", flush=True)
-    except Exception as e:
-        print(f"[SQLITE ERROR] Не вдалося записати IP в базу: {e}", flush=True)
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('printer_ip', ?)", (ip,))
+    conn.commit()
+    conn.close()
 
 
-# --- Детальні логи автопошуку (mDNS / Zeroconf) ---
+# --- mDNS сканер ---
 class MoonrakerListener(ServiceListener):
     def __init__(self):
         self.printers = []
-
     def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        print(f"[mDNS SCAN LOG] Знайдено потенційний сервіс: '{name}' (тип: {type_})", flush=True)
         info = zc.get_service_info(type_, name)
         if info:
             addresses = [socket.inet_ntoa(addr) for addr in info.addresses]
-            print(f"[mDNS SCAN LOG] Зчитано деталі сервісу: {name} -> IP={addresses}, Port={info.port}", flush=True)
             self.printers.append({
                 "name": name.split('.')[0],
                 "ip": addresses[0] if addresses else "unknown",
                 "port": info.port
             })
-        else:
-            print(f"[mDNS SCAN LOG] Попередження: Не вдалося зчитати деталі (IP/Port) для сервісу: {name}", flush=True)
-
-    def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        print(f"[mDNS SCAN LOG] Оновлено інформацію сервісу: '{name}'", flush=True)
-
-    def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        print(f"[mDNS SCAN LOG] Видалено сервіс: '{name}'", flush=True)
+    def update_service(self, zc: Zeroconf, type_: str, name: str) -> None: pass
+    def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None: pass
 
 def scan_network_for_printers() -> list:
-    print("[mDNS SCAN LOG] Запуск сканування локальної мережі...", flush=True)
     zc = Zeroconf()
     listener = MoonrakerListener()
-    # Шукаємо пристрої Moonraker Klipper
     browser = ServiceBrowser(zc, "_moonraker._tcp.local.", listener)
-    print("[mDNS SCAN LOG] Очікування відповідей від пристроїв (2.0 секунди)...", flush=True)
     time.sleep(2.0)
     zc.close()
-    print(f"[mDNS SCAN LOG] Сканування завершено. Знайдено пристроїв: {len(listener.printers)}", flush=True)
     return listener.printers
 
 
-# --- Ініціалізація клієнта з бази даних ---
+# --- Ініціалізація додатку ---
 init_db()
 saved_ip = get_saved_ip()
 klipper = KlipperClient(host=saved_ip)
 
-
-# --- Життєвий цикл FastAPI ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("[APP LIFESPAN] Веб-сервер запускається. Запуск фонового процесу WebSocket-клієнта...", flush=True)
     listener_task = asyncio.create_task(klipper.start_websocket_listener())
     yield
-    print("[APP LIFESPAN] Веб-сервер зупиняється. Зупинка фонового процесу...", flush=True)
     listener_task.cancel()
     await klipper.http_client.aclose()
-    print("[APP LIFESPAN] Всі ресурси вивільнено.", flush=True)
 
-app = FastAPI(title="Klipper Smart Gateway Architecture", lifespan=lifespan)
+app = FastAPI(title="Secure Klipper Hub", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
-# --- Моделі даних ---
+# --- Моделі даних API ---
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
 class IPRequest(BaseModel):
     ip: str
 
+class RevokeRequest(BaseModel):
+    token: str
 
-# --- Спеціальні API Ендпоінти ---
 
-@app.get("/printer/status")
+# --- АВТОРИЗАЦІЙНІ ЕНДПОІНТИ ---
+
+@app.get("/api/auth/status")
+def get_auth_status():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM users")
+    count = cursor.fetchone()[0]
+    conn.close()
+    return {"is_registered": count > 0}
+
+@app.post("/api/auth/register")
+def register_user(payload: RegisterRequest, request: Request):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM users")
+    count = cursor.fetchone()[0]
+    
+    if count > 0:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Реєстрація закрита. Адміністратора вже створено.")
+    
+    hashed = hash_password(payload.password)
+    try:
+        cursor.execute("INSERT INTO users (email, password_hash) VALUES (?, ?)", (payload.email, hashed))
+        conn.commit()
+        user_id = cursor.lastrowid
+    except Exception as e:
+        conn.close()
+        raise HTTPException(status_code=500, detail=f"Помилка створення: {e}")
+    
+    conn.close()
+    
+    # Зчитуємо IP та браузер клієнта для запису в сесію
+    ip = request.client.host if request.client else "unknown"
+    ua = request.headers.get("user-agent", "unknown")
+    token = create_session(user_id, ip, ua)
+    return {"status": "success", "token": token}
+
+@app.post("/api/auth/login")
+def login_user(payload: LoginRequest, request: Request):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, password_hash FROM users WHERE email=?", (payload.email,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row or not verify_password(row[1], payload.password):
+        raise HTTPException(status_code=401, detail="Невірний email або пароль")
+    
+    # Зчитуємо IP та браузер клієнта для запису в сесію
+    ip = request.client.host if request.client else "unknown"
+    ua = request.headers.get("user-agent", "unknown")
+    token = create_session(row[0], ip, ua)
+    return {"status": "success", "token": token}
+
+
+# --- УПРАВЛІННЯ ПРИСТРОЯМИ (СЕСІЯМИ) ---
+
+@app.get("/api/auth/sessions")
+def get_active_sessions(authorization: str = Header(None)):
+    """Отримати список усіх підключених пристроїв"""
+    current_token = authorization
+    if current_token and current_token.startswith("Bearer "):
+        current_token = current_token[7:]
+        
+    current_user_id = verify_session_token(current_token)
+    
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT token, ip_address, user_agent, created_at FROM sessions WHERE user_id=?", 
+        (current_user_id,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    
+    sessions_list = []
+    for row in rows:
+        token, ip, ua, created_at = row
+        readable_device = parse_user_agent(ua)
+        readable_date = datetime.fromtimestamp(created_at).strftime("%d.%m.%Y %H:%M") if created_at else "Невідомо"
+        
+        sessions_list.append({
+            "token": token,
+            "device": readable_device,
+            "ip": ip or "unknown",
+            "date": readable_date,
+            "is_current": token == current_token  # Позначаємо поточний пристрій
+        })
+    return sessions_list
+
+@app.post("/api/auth/sessions/revoke")
+def revoke_session(payload: RevokeRequest, authorization: str = Header(None)):
+    """Закрити сесію для певного пристрою (розірвати зв'язок)"""
+    current_token = authorization
+    if current_token and current_token.startswith("Bearer "):
+        current_token = current_token[7:]
+        
+    verify_session_token(current_token)  # Перевіряємо, чи сам користувач авторизований
+    
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    # Видаляємо вказану сесію
+    cursor.execute("DELETE FROM sessions WHERE token=?", (payload.token,))
+    conn.commit()
+    conn.close()
+    return {"status": "success"}
+
+
+# --- ЗАХИЩЕНІ ЕНДПОІНТИ ПРИНТЕРА ---
+
+@app.get("/printer/status", dependencies=[Depends(get_current_user)])
 async def get_status():
     return {
         "configured_ip": klipper.host,
@@ -131,29 +366,21 @@ async def get_status():
         "telemetry": klipper.state
     }
 
-@app.post("/settings/printer-ip")
+@app.post("/settings/printer-ip", dependencies=[Depends(get_current_user)])
 async def update_printer_ip(payload: IPRequest):
     ip = payload.ip.strip()
-    print(f"[API ROUTE] Запит на зміну IP: '{ip}'", flush=True)
     if not ip:
         raise HTTPException(status_code=400, detail="IP не може бути пустим")
-    
     save_ip_to_db(ip)
     await klipper.update_host_and_reconnect(ip)
     return {"status": "success", "saved_ip": ip}
 
-@app.post("/settings/scan")
+@app.post("/settings/scan", dependencies=[Depends(get_current_user)])
 def scan_printers():
-    print("[API ROUTE] Запит на сканування мережі.", flush=True)
-    try:
-        found = scan_network_for_printers()
-        return {"status": "success", "printers": found}
-    except Exception as e:
-        print(f"[API ERROR] Помилка під час сканування: {e}", flush=True)
-        raise HTTPException(status_code=500, detail=f"Помилка сканування: {str(e)}")
+    return {"status": "success", "printers": scan_network_for_printers()}
 
 
-# --- Візуальний інтерфейс (HTML + JS) ---
+# --- Оновлений Веб-інтерфейс (без M112 та з сесіями) ---
 @app.get("/", response_class=HTMLResponse)
 def get_home_page():
     return """
@@ -162,24 +389,46 @@ def get_home_page():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Unified Printer Hub</title>
+        <title>Unified Printer Hub (Secure Sessions)</title>
         <script src="https://cdn.tailwindcss.com"></script>
     </head>
-    <body class="bg-gray-900 text-gray-100 font-sans min-h-screen">
-        <div class="container mx-auto p-6 max-w-4xl">
-            <!-- Header -->
-            <header class="mb-8 text-center">
-                <h1 class="text-3xl font-extrabold text-blue-500">Abstract Spaghetti Syndicate</h1>
-                <p class="text-gray-400 mt-2">Панель керування та налаштування принтера (Unified Architecture)</p>
+    <body class="bg-gray-900 text-gray-100 font-sans min-h-screen flex items-center justify-center">
+        
+        <!-- Блок Авторизації -->
+        <div id="auth-box" class="bg-gray-800 p-8 rounded-lg shadow-lg border border-gray-700 w-full max-w-md">
+            <h2 id="auth-title" class="text-2xl font-bold text-center text-blue-500 mb-2">Завантаження...</h2>
+            <p id="auth-subtitle" class="text-xs text-gray-400 text-center mb-6">Перевірка стану системи...</p>
+            
+            <form id="auth-form" onsubmit="handleAuth(event)" class="space-y-4">
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Email</label>
+                    <input id="auth-email" type="email" required class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500 text-white">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Пароль</label>
+                    <input id="auth-password" type="password" required class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500 text-white">
+                </div>
+                <button id="auth-btn" type="submit" class="w-full bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold py-2.5 rounded transition">Увійти</button>
+            </form>
+        </div>
+
+        <!-- Головна Панель Керування -->
+        <div id="main-panel" class="container mx-auto p-6 max-w-4xl hidden self-start">
+            <header class="mb-8 flex justify-between items-center">
+                <div>
+                    <h1 class="text-3xl font-extrabold text-blue-500">Abstract Spaghetti Syndicate</h1>
+                    <p class="text-gray-400 text-xs">Безпечна панель моніторингу принтера</p>
+                </div>
+                <div>
+                    <button onclick="handleLogout()" class="bg-gray-700 hover:bg-gray-600 text-white text-xs font-bold px-4 py-2 rounded transition">Вийти</button>
+                </div>
             </header>
 
-            <!-- Grid Layout -->
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                
-                <!-- Ліва колонка: Статус принтера -->
+                <!-- Монітор -->
                 <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700 flex flex-col h-[550px]">
-                    <h2 class="text-xl font-bold mb-4 border-b border-gray-700 pb-2 flex-shrink-0">Монітор принтера</h2>
-                    <div class="space-y-2 flex-shrink-0 mb-3">
+                    <h2 class="text-xl font-bold mb-4 border-b border-gray-700 pb-2">Монітор принтера</h2>
+                    <div class="space-y-2 mb-3">
                         <div class="flex justify-between items-center text-xs">
                             <span class="text-gray-400">IP принтера:</span>
                             <span id="current-ip" class="font-mono text-blue-400 font-bold">...</span>
@@ -190,85 +439,223 @@ def get_home_page():
                         </div>
                     </div>
 
-                    <!-- Стандартизований вивід температур (Швидкий погляд) -->
-                    <div class="grid grid-cols-2 gap-3 flex-shrink-0 mb-4">
+                    <div class="grid grid-cols-2 gap-3 mb-4">
                         <div class="bg-gray-900 p-3 rounded text-center border border-gray-800">
                             <p class="text-[10px] text-gray-500 font-bold uppercase">Екструдер</p>
                             <p id="temp-extruder" class="text-xl font-extrabold text-red-500">0.0°C</p>
                             <p id="target-extruder" class="text-[10px] text-gray-400">Ціль: 0°C</p>
                         </div>
                         <div class="bg-gray-900 p-3 rounded text-center border border-gray-800">
-                            <p class="text-[10px] text-gray-500 font-bold uppercase">Стіл друку</p>
+                            <p class="text-[10px] text-gray-500 font-bold uppercase">Стіл</p>
                             <p id="temp-bed" class="text-xl font-extrabold text-yellow-500">0.0°C</p>
                             <p id="target-bed" class="text-[10px] text-gray-400">Ціль: 0°C</p>
                         </div>
                     </div>
 
-                    <!-- Контейнер для автогенерації інших датчиків (Raw debug) -->
-                    <p class="text-[11px] font-bold text-gray-400 flex-shrink-0 mb-1.5 uppercase tracking-wider">Усі датчики системи (Raw Telemetry):</p>
-                    <div id="dynamic-sensors-container" class="flex-1 overflow-y-auto space-y-2 pr-1 scrollbar-thin scrollbar-thumb-gray-700">
-                        <p class="text-xs text-gray-500 text-center py-8">Очікування даних від принтера...</p>
-                    </div>
+                    <p class="text-[11px] font-bold text-gray-400 mb-1.5 uppercase tracking-wider">Усі датчики системи:</p>
+                    <div id="dynamic-sensors-container" class="flex-1 overflow-y-auto space-y-2 pr-1 scrollbar-thin scrollbar-thumb-gray-700"></div>
                 </div>
 
-                <!-- Права колонка: Налаштування підключення -->
+                <!-- Налаштування та пристрої -->
                 <div class="space-y-6">
-                    
-                    <!-- Спосіб 1: Ручне введення та збереження у базу даних -->
+                    <!-- Налаштування IP -->
                     <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700">
                         <h2 class="text-lg font-bold text-white mb-2">Спосіб 1: Зберегти IP у базу (SQLite)</h2>
-                        <p class="text-xs text-gray-400 mb-4">Введіть IP вручную. Він запишеться у локальну базу даних.</p>
                         <div class="flex gap-2">
                             <input id="manual-ip-input" type="text" placeholder="напр. 192.168.1.115 або localhost" class="bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm flex-1 focus:outline-none focus:border-blue-500 text-mono text-white">
                             <button onclick="saveManualIP()" class="bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold px-4 py-2 rounded transition">Зберегти</button>
                         </div>
                     </div>
 
-                    <!-- Спосіб 2: Автоматичний mDNS пошук у мережі -->
+                    <!-- Пошук mDNS -->
                     <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700">
                         <h2 class="text-lg font-bold text-white mb-2">Спосіб 2: Автоматичний пошук (mDNS)</h2>
-                        <p class="text-xs text-gray-400 mb-4">Сканувати домашню мережу на наявність Klipper/Moonraker принтерів.</p>
                         <button id="scan-btn" onclick="startScan()" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold py-2 px-4 rounded transition">🔍 Сканувати мережу</button>
-                        
-                        <!-- Список знайдених пристроїв -->
                         <div id="scan-results" class="mt-4 space-y-2 hidden">
                             <p class="text-xs font-semibold text-gray-400 border-b border-gray-700 pb-1">Знайдені пристрої:</p>
-                            <div id="printers-list" class="max-h-40 overflow-y-auto space-y-2">
-                                <!-- Сюди будуть додаватися принтери через JS -->
-                            </div>
+                            <div id="printers-list" class="max-h-40 overflow-y-auto space-y-2"></div>
                         </div>
                     </div>
 
+                    <!-- Список активних сесій (новий блок) -->
+                    <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700">
+                        <h2 class="text-lg font-bold text-white mb-1">Підключені пристрої</h2>
+                        <p class="text-xs text-gray-400 mb-4">Список ваших активних сесій на інших гаджетах.</p>
+                        <div id="sessions-list" class="space-y-2 max-h-44 overflow-y-auto pr-1">
+                            <!-- Сесії будуть завантажені через JS -->
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
 
         <script>
-            // Регулярне опитування статусу принтера (кожні 1.5 секунди)
-            async function pollStatus() {
+            let isSystemRegistered = false;
+            let pollingInterval = null;
+
+            async function checkAuthStatus() {
                 try {
-                    const response = await fetch('/printer/status');
+                    const response = await fetch("/api/auth/status");
                     const data = await response.json();
-                    
-                    document.getElementById('current-ip').innerText = data.configured_ip || 'Не налаштовано';
-                    
-                    const statusEl = document.getElementById('connection-status');
-                    if (data.connected) {
-                        statusEl.innerText = "ПІДКЛЮЧЕНО (" + data.telemetry.print_state.toUpperCase() + ")";
-                        statusEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-900 text-emerald-300';
+                    isSystemRegistered = data.is_registered;
+
+                    const titleEl = document.getElementById("auth-title");
+                    const subtitleEl = document.getElementById("auth-subtitle");
+                    const btnEl = document.getElementById("auth-btn");
+
+                    if (isSystemRegistered) {
+                        titleEl.innerText = "Авторизація";
+                        subtitleEl.innerText = "Увійдіть, щоб отримати доступ до принтера";
+                        btnEl.innerText = "Увійти";
                     } else {
-                        statusEl.innerText = "НЕМАЄ ЗВ'ЯЗКУ (" + data.telemetry.print_state.toUpperCase() + ")";
-                        statusEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-rose-950 text-rose-300';
+                        titleEl.innerText = "Первинне налаштування";
+                        subtitleEl.innerText = "Створіть акаунт адміністратора системи";
+                        btnEl.innerText = "Зареєструватися";
                     }
 
-                    // 1. Рендеримо стандартизовані показники (temps)
-                    document.getElementById('temp-extruder').innerText = data.telemetry.temps.extruder.current.toFixed(1) + '°C';
-                    document.getElementById('target-extruder').innerText = 'Ціль: ' + data.telemetry.temps.extruder.target.toFixed(0) + '°C';
-                    document.getElementById('temp-bed').innerText = data.telemetry.temps.bed.current.toFixed(1) + '°C';
-                    document.getElementById('target-bed').innerText = 'Ціль: ' + data.telemetry.temps.bed.target.toFixed(0) + '°C';
+                    const token = localStorage.getItem("session_token");
+                    if (token) {
+                        showMainPanel();
+                    }
+                } catch (e) {
+                    console.error("Помилка ініціалізації авторизації:", e);
+                }
+            }
 
-                    // 2. Рендеримо решту сирих даних у дебаг-панель
-                    const container = document.getElementById('dynamic-sensors-container');
+            async function handleAuth(event) {
+                event.preventDefault();
+                const email = document.getElementById("auth-email").value;
+                const password = document.getElementById("auth-password").value;
+
+                const endpoint = isSystemRegistered ? "/api/auth/login" : "/api/auth/register";
+
+                try {
+                    const response = await fetch(endpoint, {
+                        method: "POST",
+                        headers: {"Content-Type": "application/json"},
+                        body: JSON.stringify({email, password})
+                    });
+
+                    if (!response.ok) {
+                        const err = await response.json();
+                        alert("Помилка: " + (err.detail || "Невідома помилка"));
+                        return;
+                    }
+
+                    const data = await response.json();
+                    if (data.status === "success" && data.token) {
+                        localStorage.setItem("session_token", data.token);
+                        showMainPanel();
+                    }
+                } catch (e) {
+                    alert("Помилка з'єднання з сервером.");
+                }
+            }
+
+            function showMainPanel() {
+                document.body.className = "bg-gray-900 text-gray-100 font-sans min-h-screen flex items-start justify-start";
+                document.getElementById("auth-box").classList.add("hidden");
+                document.getElementById("main-panel").classList.remove("hidden");
+                
+                if (!pollingInterval) {
+                    pollingInterval = setInterval(pollStatus, 1500);
+                    pollStatus();
+                    loadSessions(); // завантажуємо сесії при вході
+                }
+            }
+
+            function handleLogout() {
+                localStorage.removeItem("session_token");
+                if (pollingInterval) {
+                    clearInterval(pollingInterval);
+                    pollingInterval = null;
+                }
+                document.body.className = "bg-gray-900 text-gray-100 font-sans min-h-screen flex items-center justify-center";
+                document.getElementById("main-panel").classList.add("hidden");
+                document.getElementById("auth-box").classList.remove("hidden");
+                checkAuthStatus();
+            }
+
+            async function secureFetch(url, options = {}) {
+                const token = localStorage.getItem("session_token");
+                if (!options.headers) options.headers = {};
+                options.headers["Authorization"] = "Bearer " + token;
+
+                const response = await fetch(url, options);
+                if (response.status === 401) {
+                    handleLogout();
+                    throw new Error("Unauthorized");
+                }
+                return response;
+            }
+
+            // Завантаження списку сесій з бекенду
+            async function loadSessions() {
+                try {
+                    const response = await secureFetch("/api/auth/sessions");
+                    const data = await response.json();
+                    const listDiv = document.getElementById("sessions-list");
+                    listDiv.innerHTML = "";
+                    
+                    data.forEach(sess => {
+                        const item = document.createElement("div");
+                        item.className = "flex items-center justify-between bg-gray-900 p-2.5 rounded text-xs border border-gray-950";
+                        const currentBadge = sess.is_current ? `<span class="bg-blue-900/60 text-blue-300 px-1 py-0.5 rounded text-[9px] font-bold">Цей пристрій</span>` : "";
+                        
+                        item.innerHTML = `
+                            <div>
+                                <span class="font-bold text-gray-200 block">${sess.device} ${currentBadge}</span>
+                                <span class="text-gray-500 font-mono text-[10px]">${sess.ip} | ${sess.date}</span>
+                            </div>
+                            ${sess.is_current ? "" : `<button onclick="revokeSession('${sess.token}')" class="bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 px-2 py-1 rounded transition text-[10px] font-bold">Закрити</button>`}
+                        `;
+                        listDiv.appendChild(item);
+                    });
+                } catch (e) {
+                    console.error("Помилка завантаження сесій:", e);
+                }
+            }
+
+            // Розірвати сесію для іншого пристрою
+            async function revokeSession(tokenToRevoke) {
+                if (!confirm("Ви дійсно хочете закрити сесію для цього пристрою?")) return;
+                try {
+                    const response = await secureFetch("/api/auth/sessions/revoke", {
+                        method: "POST",
+                        headers: {"Content-Type": "application/json"},
+                        body: JSON.stringify({token: tokenToRevoke})
+                    });
+                    const result = await response.json();
+                    if (result.status === "success") {
+                        loadSessions(); // Оновлюємо список
+                    }
+                } catch (e) {
+                    alert("Помилка закриття сесії.");
+                }
+            }
+
+            async function pollStatus() {
+                try {
+                    const response = await secureFetch("/printer/status");
+                    const data = await response.json();
+                    
+                    document.getElementById("current-ip").innerText = data.configured_ip || "Не налаштовано";
+                    
+                    const statusEl = document.getElementById("connection-status");
+                    if (data.connected) {
+                        statusEl.innerText = "ПІДКЛЮЧЕНО (" + data.telemetry.print_state.toUpperCase() + ")";
+                        statusEl.className = "px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-900 text-emerald-300";
+                    } else {
+                        statusEl.innerText = "НЕМАЄ ЗВ'ЯЗКУ (" + data.telemetry.print_state.toUpperCase() + ")";
+                        statusEl.className = "px-2 py-0.5 rounded text-[10px] font-bold bg-rose-950 text-rose-300";
+                    }
+
+                    document.getElementById("temp-extruder").innerText = data.telemetry.temps.extruder.current.toFixed(1) + "°C";
+                    document.getElementById("target-extruder").innerText = "Ціль: " + data.telemetry.temps.extruder.target.toFixed(0) + "°C";
+                    document.getElementById("temp-bed").innerText = data.telemetry.temps.bed.current.toFixed(1) + "°C";
+                    document.getElementById("target-bed").innerText = "Ціль: " + data.telemetry.temps.bed.target.toFixed(0) + "°C";
+
+                    const container = document.getElementById("dynamic-sensors-container");
                     const rawTelemetry = data.telemetry.raw_telemetry || {};
 
                     if (Object.keys(rawTelemetry).length === 0) {
@@ -276,18 +663,18 @@ def get_home_page():
                         return;
                     }
 
-                    container.innerHTML = ''; // Очищаємо
+                    container.innerHTML = "";
                     
                     for (const [sensorName, sensorValue] of Object.entries(rawTelemetry)) {
-                        const card = document.createElement('div');
-                        card.className = 'bg-gray-900 p-2.5 rounded border border-gray-800';
+                        const card = document.createElement("div");
+                        card.className = "bg-gray-900 p-2.5 rounded border border-gray-800";
 
                         let html = `<p class="text-[11px] font-bold text-blue-400 border-b border-gray-800 pb-0.5 font-mono">${sensorName}</p>`;
                         
-                        if (typeof sensorValue === 'object' && sensorValue !== null) {
+                        if (typeof sensorValue === "object" && sensorValue !== null) {
                             html += `<div class="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-0.5 mt-1 text-[11px]">`;
                             for (const [propName, propValue] of Object.entries(sensorValue)) {
-                                const displayValue = typeof propValue === 'number' ? propValue.toFixed(1) : propValue;
+                                const displayValue = typeof propValue === "number" ? propValue.toFixed(1) : propValue;
                                 html += `
                                     <div class="flex justify-between py-0.5 border-b border-gray-950">
                                         <span class="text-gray-500 font-mono text-[10px]">${propName}:</span>
@@ -295,9 +682,9 @@ def get_home_page():
                                     </div>
                                 `;
                             }
-                            html += `</div>`;
+                            html += "</div>";
                         } else {
-                            const displayValue = typeof sensorValue === 'number' ? sensorValue.toFixed(1) : sensorValue;
+                            const displayValue = typeof sensorValue === "number" ? sensorValue.toFixed(1) : sensorValue;
                             html += `
                                 <div class="flex justify-between text-[11px] mt-1">
                                     <span class="text-gray-500 font-mono text-[10px]">value:</span>
@@ -311,51 +698,49 @@ def get_home_page():
                     }
 
                 } catch (e) {
-                    console.error('Помилка опитування статусу:', e);
+                    console.error("Помилка опитування статусу:", e);
                 }
             }
 
-            // Спосіб 1: Зберегти IP
             async function saveManualIP(ipAddress = null) {
-                const ip = ipAddress || document.getElementById('manual-ip-input').value;
-                if (!ip) return alert('Будь ласка, введіть коректну IP-адресу.');
+                const ip = ipAddress || document.getElementById("manual-ip-input").value;
+                if (!ip) return alert("Будь ласка, введіть коректну IP-адресу.");
 
                 try {
-                    const response = await fetch('/settings/printer-ip', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
+                    const response = await secureFetch("/settings/printer-ip", {
+                        method: "POST",
+                        headers: {"Content-Type": "application/json"},
                         body: JSON.stringify({ip: ip})
                     });
                     const result = await response.json();
-                    if (result.status === 'success') {
-                        alert('IP-адресу ' + ip + ' успішно збережено в SQLite. Бекенд виконує підключення!');
-                        document.getElementById('manual-ip-input').value = '';
+                    if (result.status === "success") {
+                        alert("IP-адресу успішно збережено.");
+                        document.getElementById("manual-ip-input").value = "";
                     }
                 } catch (e) {
-                    alert('Помилка під час збереження IP.');
+                    alert("Помилка збереження.");
                 }
             }
 
-            // Спосіб 2: Сканування мережі
             async function startScan() {
-                const scanBtn = document.getElementById('scan-btn');
-                const resultsDiv = document.getElementById('scan-results');
-                const listDiv = document.getElementById('printers-list');
+                const scanBtn = document.getElementById("scan-btn");
+                const resultsDiv = document.getElementById("scan-results");
+                const listDiv = document.getElementById("printers-list");
 
-                scanBtn.innerText = '⏳ Йде сканування мережі (2 сек)...';
+                scanBtn.innerText = "⏳ Йде сканування мережі (2 сек)...";
                 scanBtn.disabled = true;
 
                 try {
-                    const response = await fetch('/settings/scan', { method: 'POST' });
+                    const response = await secureFetch("/settings/scan", { method: "POST" });
                     const data = await response.json();
                     
-                    listDiv.innerHTML = '';
-                    resultsDiv.classList.remove('hidden');
+                    listDiv.innerHTML = "";
+                    resultsDiv.classList.remove("hidden");
 
-                    if (data.status === 'success' && data.printers.length > 0) {
+                    if (data.status === "success" && data.printers.length > 0) {
                         data.printers.forEach(printer => {
-                            const item = document.createElement('div');
-                            item.className = 'flex items-center justify-between bg-gray-900 p-2 rounded text-xs';
+                            const item = document.createElement("div");
+                            item.className = "flex items-center justify-between bg-gray-900 p-2 rounded text-xs";
                             item.innerHTML = `
                                 <div>
                                     <span class="font-bold text-gray-200 block">${printer.name}</span>
@@ -366,19 +751,17 @@ def get_home_page():
                             listDiv.appendChild(item);
                         });
                     } else {
-                        listDiv.innerHTML = '<p class="text-xs text-gray-500 p-2">Жодного Klipper-принтера в мережі не знайдено.</p>';
+                        listDiv.innerHTML = '<p class="text-xs text-gray-500 p-2">Пристроїв не знайдено.</p>';
                     }
                 } catch (e) {
-                    alert('Помилка сканування локальної мережі.');
+                    alert("Помилка сканування.");
                 } finally {
-                    scanBtn.innerText = '🔍 Сканувати мережу';
+                    scanBtn.innerText = "🔍 Сканувати мережу";
                     scanBtn.disabled = false;
                 }
             }
 
-            // Запускаємо опитування кожні 1.5 сек
-            setInterval(pollStatus, 1500);
-            pollStatus(); // Перший запуск одразу
+            checkAuthStatus();
         </script>
     </body>
     </html>
