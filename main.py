@@ -2,8 +2,10 @@ import sqlite3
 import socket
 import time
 import os
+import json
 import hashlib
 import asyncio
+import httpx
 from datetime import datetime
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Header, Depends, Request
@@ -19,6 +21,8 @@ DB_FILE = "settings.db"
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
+    cursor.execute("PRAGMA foreign_keys = ON")
+    
     # Таблиця налаштувань
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS settings (
@@ -47,7 +51,58 @@ def init_db():
         )
     """)
     
-    # Спроба додати нові колонки до таблиці сесій, якщо база вже існувала раніше
+    # --- ТАБЛИЦІ ФІЛАМЕНТУ (Сумісні зі Spoolman) ---
+
+    # Таблиця Виробників (vendor)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS vendor (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            comment TEXT,
+            deleted INTEGER DEFAULT 0
+        )
+    """)
+
+    # Таблиця Типів філаменту (filament)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS filament (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            vendor_id INTEGER,
+            material TEXT,
+            price REAL,
+            density REAL NOT NULL,
+            diameter REAL NOT NULL,
+            weight REAL,
+            spool_weight REAL,
+            color_hex TEXT,
+            comment TEXT,
+            settings_extruder_temp INTEGER,
+            settings_bed_temp INTEGER,
+            deleted INTEGER DEFAULT 0,
+            FOREIGN KEY(vendor_id) REFERENCES vendor(id)
+        )
+    """)
+
+    # Таблиця Котушок (spool)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS spool (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filament_id INTEGER,
+            registered TEXT,
+            first_used TEXT,
+            last_used TEXT,
+            initial_weight REAL,
+            spool_weight REAL,
+            used_weight REAL NOT NULL DEFAULT 0.0,
+            comment TEXT,
+            archived INTEGER DEFAULT 0,
+            price REAL,
+            extra TEXT,
+            FOREIGN KEY(filament_id) REFERENCES filament(id)
+        )
+    """)
+    
     try:
         cursor.execute("ALTER TABLE sessions ADD COLUMN ip_address TEXT")
         cursor.execute("ALTER TABLE sessions ADD COLUMN user_agent TEXT")
@@ -57,16 +112,14 @@ def init_db():
         
     conn.commit()
     conn.close()
-    print("[SQLITE LOG] Базу даних успішно перевірено та оновлено.", flush=True)
+    print("[SQLITE LOG] Базу даних успішно ініціалізовано.", flush=True)
 
-# --- Парсер User-Agent для відображення зрозумілої назви пристрою ---
+# --- Парсер User-Agent ---
 def parse_user_agent(ua_string: str) -> str:
     if not ua_string:
         return "Невідомий пристрій"
     
     ua_string = ua_string.lower()
-    
-    # 1. Визначаємо операційну систему
     os_name = "Unknown OS"
     if "windows" in ua_string:
         os_name = "Windows"
@@ -81,9 +134,7 @@ def parse_user_agent(ua_string: str) -> str:
     elif "x11" in ua_string:
         os_name = "Unix/Linux"
         
-    # 2. Визначаємо браузер (порядок дуже важливий - від унікальних до загальних)
     browser_name = "Unknown Browser"
-    
     if "vivaldi" in ua_string:
         browser_name = "Vivaldi"
     elif "yabrowser" in ua_string:
@@ -101,15 +152,13 @@ def parse_user_agent(ua_string: str) -> str:
     elif "firefox" in ua_string or "fxios" in ua_string:
         browser_name = "Firefox"
     elif "chrome" in ua_string or "chromium" in ua_string or "crios" in ua_string:
-        # Усі інші Chromium-браузери визначаються як Chrome
         browser_name = "Chrome"
     elif "safari" in ua_string:
-        # Перевіряється останнім, оскільки більшість браузерів містять слово "Safari" у рядку
         browser_name = "Safari"
         
     return f"{browser_name} ({os_name})"
 
-# --- Безпечне хешування паролів (PBKDF2) ---
+# --- Безпечне хешування паролів ---
 def hash_password(password: str) -> str:
     salt = os.urandom(16)
     pwdhash = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 100000)
@@ -128,7 +177,7 @@ def verify_password(stored_password: str, provided_password: str) -> bool:
 def create_session(user_id: int, ip_address: str, user_agent: str) -> str:
     token = os.urandom(24).hex()
     created_at = time.time()
-    expires_at = created_at + (30 * 24 * 3600)  # Токен діє 30 днів
+    expires_at = created_at + (30 * 24 * 3600)
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute(
@@ -142,7 +191,6 @@ def create_session(user_id: int, ip_address: str, user_agent: str) -> str:
 def verify_session_token(token: str) -> int:
     if not token:
         raise HTTPException(status_code=401, detail="Токен відсутній")
-    
     if token.startswith("Bearer "):
         token = token[7:]
 
@@ -158,12 +206,10 @@ def verify_session_token(token: str) -> int:
     user_id, expires_at = row
     if time.time() > expires_at:
         raise HTTPException(status_code=401, detail="Термін дії сесії закінчився")
-    
     return user_id
 
 async def get_current_user(authorization: str = Header(None)):
     return verify_session_token(authorization)
-
 
 # --- Робота з IP принтера ---
 def get_saved_ip() -> str:
@@ -180,7 +226,6 @@ def save_ip_to_db(ip: str):
     cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('printer_ip', ?)", (ip,))
     conn.commit()
     conn.close()
-
 
 # --- mDNS сканер ---
 class MoonrakerListener(ServiceListener):
@@ -217,7 +262,6 @@ async def lifespan(app: FastAPI):
     listener_task = asyncio.create_task(klipper.start_websocket_listener())
     yield
     listener_task.cancel()
-    await klipper.http_client.aclose()
 
 app = FastAPI(title="Secure Klipper Hub", lifespan=lifespan)
 
@@ -244,6 +288,9 @@ class IPRequest(BaseModel):
 
 class RevokeRequest(BaseModel):
     token: str
+
+class SpoolmanImportRequest(BaseModel):
+    spoolman_url: str
 
 
 # --- АВТОРИЗАЦІЙНІ ЕНДПОІНТИ ---
@@ -276,10 +323,8 @@ def register_user(payload: RegisterRequest, request: Request):
     except Exception as e:
         conn.close()
         raise HTTPException(status_code=500, detail=f"Помилка створення: {e}")
-    
     conn.close()
     
-    # Зчитуємо IP та браузер клієнта для запису в сесію
     ip = request.client.host if request.client else "unknown"
     ua = request.headers.get("user-agent", "unknown")
     token = create_session(user_id, ip, ua)
@@ -296,7 +341,6 @@ def login_user(payload: LoginRequest, request: Request):
     if not row or not verify_password(row[1], payload.password):
         raise HTTPException(status_code=401, detail="Невірний email або пароль")
     
-    # Зчитуємо IP та браузер клієнта для запису в сесію
     ip = request.client.host if request.client else "unknown"
     ua = request.headers.get("user-agent", "unknown")
     token = create_session(row[0], ip, ua)
@@ -307,7 +351,6 @@ def login_user(payload: LoginRequest, request: Request):
 
 @app.get("/api/auth/sessions")
 def get_active_sessions(authorization: str = Header(None)):
-    """Отримати список усіх підключених пристроїв"""
     current_token = authorization
     if current_token and current_token.startswith("Bearer "):
         current_token = current_token[7:]
@@ -316,10 +359,7 @@ def get_active_sessions(authorization: str = Header(None)):
     
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute(
-        "SELECT token, ip_address, user_agent, created_at FROM sessions WHERE user_id=?", 
-        (current_user_id,)
-    )
+    cursor.execute("SELECT token, ip_address, user_agent, created_at FROM sessions WHERE user_id=?", (current_user_id,))
     rows = cursor.fetchall()
     conn.close()
     
@@ -334,22 +374,19 @@ def get_active_sessions(authorization: str = Header(None)):
             "device": readable_device,
             "ip": ip or "unknown",
             "date": readable_date,
-            "is_current": token == current_token  # Позначаємо поточний пристрій
+            "is_current": token == current_token
         })
     return sessions_list
 
 @app.post("/api/auth/sessions/revoke")
 def revoke_session(payload: RevokeRequest, authorization: str = Header(None)):
-    """Закрити сесію для певного пристрою (розірвати зв'язок)"""
     current_token = authorization
     if current_token and current_token.startswith("Bearer "):
         current_token = current_token[7:]
-        
-    verify_session_token(current_token)  # Перевіряємо, чи сам користувач авторизований
+    verify_session_token(current_token)
     
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    # Видаляємо вказану сесію
     cursor.execute("DELETE FROM sessions WHERE token=?", (payload.token,))
     conn.commit()
     conn.close()
@@ -380,7 +417,138 @@ def scan_printers():
     return {"status": "success", "printers": scan_network_for_printers()}
 
 
-# --- Оновлений Веб-інтерфейс (без M112 та з сесіями) ---
+# --- ЕНДПОІНТИ КЕРУВАННЯ ФІЛАМЕНТОМ (SPOOLMAN) ---
+
+@app.get("/api/spools", dependencies=[Depends(get_current_user)])
+def get_spools_list():
+    """Повертає список неархівованих котушок у нашому єдиному стандарті"""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        # Об'єднуємо таблиці, вираховуємо вагу та підстраховуємося COALESCE, якщо initial_weight = NULL
+        cursor.execute("""
+            SELECT 
+                spool.id, 
+                vendor.name, 
+                filament.name, 
+                filament.material, 
+                COALESCE(spool.initial_weight, filament.weight, 1000.0) AS initial, 
+                spool.used_weight,
+                filament.color_hex
+            FROM spool
+            JOIN filament ON spool.filament_id = filament.id
+            JOIN vendor ON filament.vendor_id = vendor.id
+            WHERE spool.archived = 0
+            ORDER BY spool.id DESC
+        """)
+        rows = cursor.fetchall()
+        conn.close()
+        
+        spools = []
+        for r in rows:
+            spools.append({
+                "id": r[0],
+                "vendor": r[1],
+                "name": r[2],
+                "material": r[3],
+                "initial_weight": r[4],
+                "used_weight": r[5],
+                "color_hex": r[6]
+            })
+        return {"status": "success", "spools": spools}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Помилка зчитування бази: {str(e)}")
+
+@app.post("/api/spoolman/import", dependencies=[Depends(get_current_user)])
+async def import_from_spoolman(payload: SpoolmanImportRequest):
+    base_url = payload.spoolman_url.strip().rstrip("/")
+    if not base_url.endswith("/api/v1"):
+        base_url = f"{base_url}/api/v1"
+        
+    print(f"[SPOOLMAN IMPORT] Початок імпорту з {base_url}...", flush=True)
+    
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            v_resp = await client.get(f"{base_url}/vendor")
+            if v_resp.status_code != 200:
+                raise HTTPException(status_code=400, detail=f"Помилка завантаження виробників: {v_resp.status_code}")
+            vendors = v_resp.json()
+            
+            f_resp = await client.get(f"{base_url}/filament")
+            if f_resp.status_code != 200:
+                raise HTTPException(status_code=400, detail=f"Помилка завантаження пластику: {f_resp.status_code}")
+            filaments = f_resp.json()
+            
+            s_resp = await client.get(f"{base_url}/spool")
+            if s_resp.status_code != 200:
+                raise HTTPException(status_code=400, detail=f"Помилка завантаження котушок: {s_resp.status_code}")
+            spools = s_resp.json()
+
+        print("[SPOOLMAN IMPORT] Дані завантажено. Запис в SQLite...", flush=True)
+
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA foreign_keys = OFF")
+
+        for v in vendors:
+            cursor.execute("""
+                INSERT OR REPLACE INTO vendor (id, name, comment, deleted)
+                VALUES (?, ?, ?, ?)
+            """, (v.get("id"), v.get("name"), v.get("comment"), 1 if v.get("deleted") else 0))
+            
+        for f in filaments:
+            vendor_id = f.get("vendor", {}).get("id") if f.get("vendor") else None
+            cursor.execute("""
+                INSERT OR REPLACE INTO filament (
+                    id, name, vendor_id, material, price, density, diameter, 
+                    weight, spool_weight, color_hex, comment, 
+                    settings_extruder_temp, settings_bed_temp, deleted
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                f.get("id"), f.get("name"), vendor_id, f.get("material"),
+                f.get("price"), f.get("density"), f.get("diameter"),
+                f.get("weight"), f.get("spool_weight"), f.get("color_hex"),
+                f.get("comment"), f.get("settings_extruder_temp"),
+                f.get("settings_bed_temp"), 1 if f.get("deleted") else 0
+            ))
+
+        for s in spools:
+            filament_id = s.get("filament", {}).get("id") if s.get("filament") else None
+            extra_val = json.dumps(s.get("extra")) if s.get("extra") else None
+            
+            cursor.execute("""
+                INSERT OR REPLACE INTO spool (
+                    id, filament_id, registered, first_used, last_used, 
+                    initial_weight, spool_weight, used_weight, comment, archived, price, extra
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                s.get("id"), filament_id, s.get("registered"), s.get("first_used"),
+                s.get("last_used"), s.get("initial_weight"), s.get("spool_weight"),
+                s.get("used_weight", 0.0), s.get("comment"), 1 if s.get("archived") else 0,
+                s.get("price"), extra_val
+            ))
+
+        cursor.execute("PRAGMA foreign_keys = ON")
+        conn.commit()
+        conn.close()
+        
+        print(f"[SPOOLMAN IMPORT SUCCESS] Успішно імпортовано: {len(vendors)} виробників, {len(filaments)} пластику, {len(spools)} котушок.", flush=True)
+        return {
+            "status": "success",
+            "imported": {
+                "vendors": len(vendors),
+                "filaments": len(filaments),
+                "spools": len(spools)
+            }
+        }
+    except Exception as e:
+        print(f"[SPOOLMAN IMPORT ERROR] Помилка: {e}", flush=True)
+        raise HTTPException(status_code=500, detail=f"Помилка імпорту: {str(e)}")
+
+
+# --- Веб-інтерфейс ---
 @app.get("/", response_class=HTMLResponse)
 def get_home_page():
     return """
@@ -424,6 +592,7 @@ def get_home_page():
                 </div>
             </header>
 
+            <!-- Основна Сітка -->
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <!-- Монітор -->
                 <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700 flex flex-col h-[550px]">
@@ -477,16 +646,35 @@ def get_home_page():
                         </div>
                     </div>
 
-                    <!-- Список активних сесій (новий блок) -->
+                    <!-- Імпорт зі Spoolman -->
+                    <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700">
+                        <h2 class="text-lg font-bold text-white mb-2">Імпорт бази зі Spoolman</h2>
+                        <p class="text-xs text-gray-400 mb-4">Синхронізувати всіх виробників, філаменти та котушки з віддаленого сервера.</p>
+                        <div class="flex gap-2">
+                            <input id="spoolman-url-input" type="text" placeholder="напр. http://192.168.1.50:7912" class="bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm flex-1 focus:outline-none focus:border-blue-500 text-mono text-white">
+                            <button onclick="importFromSpoolman(this)" class="bg-purple-600 hover:bg-purple-500 text-white text-sm font-bold px-4 py-2 rounded transition">Імпортувати</button>
+                        </div>
+                    </div>
+
+                    <!-- Список активних сесій -->
                     <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700">
                         <h2 class="text-lg font-bold text-white mb-1">Підключені пристрої</h2>
                         <p class="text-xs text-gray-400 mb-4">Список ваших активних сесій на інших гаджетах.</p>
-                        <div id="sessions-list" class="space-y-2 max-h-44 overflow-y-auto pr-1">
-                            <!-- Сесії будуть завантажені через JS -->
-                        </div>
+                        <div id="sessions-list" class="space-y-2 max-h-44 overflow-y-auto pr-1"></div>
                     </div>
                 </div>
             </div>
+
+            <!-- Новий великий блок: Список котушок (на всю ширину знизу) -->
+            <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700 mt-6">
+                <h2 class="text-xl font-bold mb-2 border-b border-gray-700 pb-2">Мої котушки філаменту</h2>
+                <p class="text-xs text-gray-400 mb-4">Список активних та імпортованих котушок, збережених у локальній базі даних.</p>
+                
+                <div id="spools-list-container" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 max-h-96 overflow-y-auto pr-1">
+                    <p class="text-xs text-gray-500 py-6 text-center col-span-full">Очікування завантаження списку котушок...</p>
+                </div>
+            </div>
+
         </div>
 
         <script>
@@ -560,7 +748,8 @@ def get_home_page():
                 if (!pollingInterval) {
                     pollingInterval = setInterval(pollStatus, 1500);
                     pollStatus();
-                    loadSessions(); // завантажуємо сесії при вході
+                    loadSessions();
+                    loadSpools(); // Завантажуємо котушки при вході
                 }
             }
 
@@ -589,7 +778,6 @@ def get_home_page():
                 return response;
             }
 
-            // Завантаження списку сесій з бекенду
             async function loadSessions() {
                 try {
                     const response = await secureFetch("/api/auth/sessions");
@@ -616,7 +804,6 @@ def get_home_page():
                 }
             }
 
-            // Розірвати сесію для іншого пристрою
             async function revokeSession(tokenToRevoke) {
                 if (!confirm("Ви дійсно хочете закрити сесію для цього пристрою?")) return;
                 try {
@@ -627,10 +814,102 @@ def get_home_page():
                     });
                     const result = await response.json();
                     if (result.status === "success") {
-                        loadSessions(); // Оновлюємо список
+                        loadSessions();
                     }
                 } catch (e) {
                     alert("Помилка закриття сесії.");
+                }
+            }
+
+            // Завантаження котушок на головний екран
+            async function loadSpools() {
+                try {
+                    const response = await secureFetch("/api/spools");
+                    const data = await response.json();
+                    const container = document.getElementById("spools-list-container");
+                    container.innerHTML = "";
+
+                    if (data.status === "success" && data.spools.length > 0) {
+                        data.spools.forEach(spool => {
+                            const remaining = spool.initial_weight - spool.used_weight;
+                            // Рахуємо відсоток залишку для красивого прогрес-бару
+                            const percentage = Math.max(0, Math.min(100, (remaining / spool.initial_weight) * 100));
+                            
+                            const card = document.createElement("div");
+                            card.className = "bg-gray-900 p-3.5 rounded border border-gray-800 flex flex-col justify-between";
+                            
+                            // Якщо у філамента в базі є колір HEX — малюємо кольоровий кружечок
+                            const colorMarker = spool.color_hex ? `<span class="inline-block w-3 h-3 rounded-full border border-gray-700 mr-1.5 align-middle" style="background-color: #${spool.color_hex}"></span>` : "";
+
+                            card.innerHTML = `
+                                <div>
+                                    <div class="flex justify-between items-start mb-1">
+                                        <span class="text-gray-500 font-mono text-[10px] font-bold uppercase tracking-wider">${spool.vendor}</span>
+                                        <span class="bg-blue-950/60 text-blue-300 text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase">${spool.material}</span>
+                                    </div>
+                                    <h3 class="text-xs font-bold text-gray-200 flex items-center mb-3">
+                                        ${colorMarker}
+                                        ${spool.name || "Філамент #" + spool.id}
+                                    </h3>
+                                </div>
+                                <div class="space-y-1">
+                                    <div class="flex justify-between text-[11px]">
+                                        <span class="text-gray-400">Залишилося:</span>
+                                        <span class="font-mono font-bold text-emerald-400">${remaining.toFixed(0)}г / ${spool.initial_weight.toFixed(0)}г</span>
+                                    </div>
+                                    <div class="w-full bg-gray-800 rounded-full h-1.5 overflow-hidden">
+                                        <div class="bg-emerald-500 h-1.5 rounded-full transition-all duration-500" style="width: ${percentage}%"></div>
+                                    </div>
+                                </div>
+                            `;
+                            container.appendChild(card);
+                        });
+                    } else {
+                        container.innerHTML = '<p class="text-xs text-gray-500 py-6 text-center col-span-full">У вашій базі немає жодної активної котушки. Виконайте імпорт або додайте котушки.</p>';
+                    }
+                } catch (e) {
+                    console.error("Помилка завантаження котушок:", e);
+                }
+            }
+
+            async function importFromSpoolman(btn) {
+                const url = document.getElementById("spoolman-url-input").value;
+                if (!url) return alert("Будь ласка, введіть URL вашого сервера Spoolman.");
+
+                if (!confirm("Ви дійсно хочете завантажити дані? Це може перезаписати локальні записи з такими ж ID.")) return;
+
+                const oldText = btn.innerText;
+                btn.innerText = "⏳ Йде імпорт...";
+                btn.disabled = true;
+
+                try {
+                    const response = await secureFetch("/api/spoolman/import", {
+                        method: "POST",
+                        headers: {"Content-Type": "application/json"},
+                        body: JSON.stringify({spoolman_url: url})
+                    });
+                    
+                    if (!response.ok) {
+                        const err = await response.json();
+                        alert("Помилка: " + (err.detail || "Не вдалося виконати імпорт"));
+                        return;
+                    }
+
+                    const result = await response.json();
+                    if (result.status === "success") {
+                        alert("Успішно імпортовано:\\n- Виробників: " + result.imported.vendors + "\\n- Пластику: " + result.imported.filaments + "\\n- Котушок: " + result.imported.spools);
+                        document.getElementById("spoolman-url-input").value = "";
+                        
+                        // АВТОМАТИЧНО оновлюємо список котушок на екрані відразу після імпорту!
+                        loadSpools();
+                    } else {
+                        alert("Помилка імпорту.");
+                    }
+                } catch (e) {
+                    alert("Помилка зв'язку з сервером під час імпорту.");
+                } finally {
+                    btn.innerText = oldText;
+                    btn.disabled = false;
                 }
             }
 
