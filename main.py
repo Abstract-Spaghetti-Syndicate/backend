@@ -541,7 +541,15 @@ async def update_printer_ip_compatibility(payload: IPRequest):
     
     # Визначаємо порт та хост
     host = ip
-    port = 7125 if p_type == "klipper" else 5000
+    if p_type == "klipper":
+        port = 7125
+    elif p_type == "octoprint":
+        port = 5000
+    elif p_type == "reprap":
+        port = 80
+    else:
+        port = 80
+
     if ":" in ip:
         try:
             host, port_str = ip.split(":")

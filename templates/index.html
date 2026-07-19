@@ -100,6 +100,7 @@
                             <select id="printer-type-select" onchange="togglePrinterTypeFields()" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500 text-white font-bold">
                                 <option value="klipper" selected>Klipper (Moonraker)</option>
                                 <option value="octoprint">OctoPrint (Marlin)</option>
+                                <option value="reprap">RepRapFirmware (Duet)</option>
                             </select>
                         </div>
 
@@ -481,21 +482,28 @@
         }
 
         function togglePrinterTypeFields() {
-            const select = document.getElementById("printer-type-select");
-            const apiKeyContainer = document.getElementById("api-key-container");
-            const ipInput = document.getElementById("manual-ip-input");
-            const ipLabel = document.getElementById("ip-input-label");
+         const select = document.getElementById("printer-type-select");
+         const apiKeyContainer = document.getElementById("api-key-container");
+         const ipInput = document.getElementById("manual-ip-input");
+         const ipLabel = document.getElementById("ip-input-label");
+         const apiKeyLabel = apiKeyContainer.querySelector("label");
 
-            if (select.value === "klipper") {
-                apiKeyContainer.classList.add("hidden");
-                ipLabel.innerText = "IP-адреса або хост Klipper:";
-                ipInput.placeholder = "напр. 192.168.1.115 або localhost";
-            } else if (select.value === "octoprint") {
-                apiKeyContainer.classList.remove("hidden");
-                ipLabel.innerText = "IP-адреса або хост OctoPrint (з портом):";
-                ipInput.placeholder = "напр. 100.120.186.58:5000";
-            }
-        }
+         if (select.value === "klipper") {
+             apiKeyContainer.classList.add("hidden");
+             ipLabel.innerText = "IP-адреса або хост Klipper:";
+             ipInput.placeholder = "напр. 192.168.1.115 або localhost";
+         } else if (select.value === "octoprint") {
+             apiKeyContainer.classList.remove("hidden");
+             if (apiKeyLabel) apiKeyLabel.innerText = "OctoPrint API Key:";
+             ipLabel.innerText = "IP-адреса або хост OctoPrint (з портом):";
+             ipInput.placeholder = "напр. 100.120.186.58:5000";
+         } else if (select.value === "reprap") {
+             apiKeyContainer.classList.remove("hidden");
+             if (apiKeyLabel) apiKeyLabel.innerText = "Пароль до плати (якщо є):";
+             ipLabel.innerText = "IP-адреса або хост Duet/RepRap:";
+             ipInput.placeholder = "напр. 192.168.1.120";
+         }
+     }
 
         async function pollStatus() {
             if (!activePrinterId) {

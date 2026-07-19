@@ -3,6 +3,7 @@ import asyncio
 import os
 from klipper_client import KlipperClient
 from octoprint_client import OctoPrintClient
+from reprap_client import RepRapClient
 
 # Динамічно визначаємо абсолютний шлях до нашої бази даних
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -41,6 +42,9 @@ class PrinterManager:
             client = KlipperClient(host=host, port=port)
         elif p_type == "octoprint":
             client = OctoPrintClient(host=host, port=port, api_key=api_key)
+        elif p_type == "reprap":
+            # Для RepRap api_key виступає в ролі пароля до плати (якщо він є)
+            client = RepRapClient(host=host, port=port, password=api_key)
         else:
             print(f"[PRINTER MANAGER ERROR] Невідомий тип принтера '{p_type}' для ID #{p_id}", flush=True)
             return
