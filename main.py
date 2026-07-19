@@ -293,6 +293,10 @@ app.add_middleware(
 
 
 # --- Моделі даних API ---
+
+class RenamePrinterRequest(BaseModel):
+    name: str
+
 class RegisterRequest(BaseModel):
     email: str
     password: str
@@ -440,6 +444,25 @@ def get_printers_list():
         raise HTTPException(status_code=500, detail=f"Помилка: {e}")
 
 @app.post("/api/printers", dependencies=[Depends(get_current_user)])
+
+@app.put("/api/printers/{printer_id}/rename", dependencies=[Depends(get_current_user)])
+async def rename_printer(printer_id: int, payload: RenamePrinterRequest):
+    new_name = payload.name.strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="Назва не може бути порожньою")
+    
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE printers SET name=? WHERE id=?", (new_name, printer_id))
+    if cursor.rowcount == 0:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Принтер не знайдено")
+        
+    conn.commit()
+    conn.close()
+    
+    return {"status": "success", "new_name": new_name}
+
 async def add_new_printer(payload: NewPrinterRequest):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()

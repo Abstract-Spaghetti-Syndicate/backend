@@ -1,7 +1,7 @@
 
 
 git add .
-git commit -m "chore: + пітримка octoprint і кількох принтерів"
+git commit -m "chore: + зміна назви принтера і фікси3"
 git push origin main
 
 uvicorn main:app --reload      запуск сервака 
