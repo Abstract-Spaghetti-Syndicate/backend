@@ -13,7 +13,6 @@ from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
-from zeroconf import Zeroconf, ServiceBrowser, ServiceListener
 from printer_manager import PrinterManager
 
 # --- Налаштування Бази даних ---
@@ -198,32 +197,12 @@ def save_ip_to_db(ip: str):
     conn.close()
 
 
-# --- ОБ'ЄДНАНИЙ mDNS Скан для Klipper та OctoPrint ---
-class PrinterDiscoveryListener(ServiceListener):
-    def __init__(self):
-        self.printers = []
-
-    def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        info = zc.get_service_info(type_, name)
-        if info:
-            addresses = [socket.inet_ntoa(addr) for addr in info.addresses]
-            p_type = "klipper" if "moonraker" in type_ else "octoprint"
-            self.printers.append({
-                "name": name.split('.')[0],
-                "type": p_type,
-                "ip": addresses[0] if addresses else "unknown",
-                "port": info.port
-            })
-
-    def update_service(self, zc: Zeroconf, type_: str, name: str) -> None: pass
-    def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None: pass
+# --- БЕЗВІДМОВНИЙ АСИНХРОННИЙ ТСР-СКАНЕР ПОДМЕРЕЖІ ---
 
 def get_local_ip() -> str:
-    """Функція автоматично знаходить реальний IP комп'ютера у фізичній мережі (ігноруючи VPN/Tailscale)"""
+    """Знаходить фізичний локальний IP комп'ютера (ігноруючи Tailscale/VPN)"""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        # Маршрутизуємо тестовий запит. Реального з'єднання не створюється,
-        # але ОС повертає IP-адресу саме фізичного мережевого адаптера.
         s.connect(("8.8.8.8", 80))
         ip = s.getsockname()[0]
     except Exception:
@@ -232,26 +211,64 @@ def get_local_ip() -> str:
         s.close()
     return ip
 
-def scan_network_for_printers() -> list:
-    print("[mDNS SCAN LOG] Запуск сканування локальної мережі...", flush=True)
+def get_subnet_ips(local_ip: str) -> list:
+    """Генерує діапазон IP від .1 до .254 на основі локального IP"""
+    if not local_ip or local_ip == "127.0.0.1":
+        return []
+    parts = local_ip.split(".")
+    if len(parts) != 4:
+        return []
+    prefix = f"{parts[0]}.{parts[1]}.{parts[2]}."
+    return [f"{prefix}{i}" for i in range(1, 255) if f"{prefix}{i}" != local_ip]
+
+async def try_tcp_connect(ip: str, port: int, timeout: float = 0.3) -> bool:
+    """Спроба встановити пряме швидке TCP з'єднання з портом"""
     try:
-        # Отримуємо реальний фізичний IP
-        local_ip = get_local_ip()
-        print(f"[mDNS SCAN LOG] Примусове прив'язування Zeroconf до домашнього інтерфейсу: {local_ip}", flush=True)
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(ip, port),
+            timeout=timeout
+        )
+        writer.close()
+        await writer.wait_closed()
+        return True
+    except Exception:
+        return False
+
+async def scan_network_for_printers_tcp() -> list:
+    local_ip = get_local_ip()
+    ips = get_subnet_ips(local_ip)
+    if not ips:
+        print("[TCP SCAN] Не вдалося знайти локальний інтерфейс для сканування.", flush=True)
+        return []
         
-        # Передаємо цей IP у параметри interfaces. 
-        # Це змусить Zeroconf ігнорувати Tailscale/VPN та шукати принтер тільки в реальній Wi-Fi/LAN мережі!
-        zc = Zeroconf(interfaces=[local_ip])
-    except Exception as e:
-        print(f"[mDNS SCAN WARNING] Не вдалося прив'язати інтерфейс, використовуємо авторежим: {e}", flush=True)
-        zc = Zeroconf(ip_version=IPVersion.V4Only)
-        
-    listener = PrinterDiscoveryListener()
-    browser_klipper = ServiceBrowser(zc, "_moonraker._tcp.local.", listener)
-    browser_octo = ServiceBrowser(zc, "_octoprint._tcp.local.", listener)
-    time.sleep(2.0)
-    zc.close()
-    return listener.printers
+    print(f"[TCP SCAN] Початок сканування підмережі {local_ip} для портів 7125 та 5000...", flush=True)
+    
+    # Конкурентно запускаємо перевірку всіх 254 адрес на два порти паралельно!
+    tasks_klipper = [try_tcp_connect(ip, 7125) for ip in ips]
+    tasks_octo = [try_tcp_connect(ip, 5000) for ip in ips]
+    
+    results_klipper = await asyncio.gather(*tasks_klipper)
+    results_octo = await asyncio.gather(*tasks_octo)
+    
+    found_printers = []
+    for i, ip in enumerate(ips):
+        if results_klipper[i]:
+            found_printers.append({
+                "name": f"Klipper ({ip})",
+                "type": "klipper",
+                "ip": ip,
+                "port": 7125
+            })
+        if results_octo[i]:
+            found_printers.append({
+                "name": f"OctoPrint ({ip})",
+                "type": "octoprint",
+                "ip": ip,
+                "port": 5000
+            })
+            
+    print(f"[TCP SCAN] Сканування завершено. Знайдено: {len(found_printers)} пристроїв.", flush=True)
+    return found_printers
 
 
 # --- Ініціалізація бази та менеджера ---
@@ -286,9 +303,9 @@ class LoginRequest(BaseModel):
 
 class IPRequest(BaseModel):
     ip: str
-    type: str = "klipper"      # "klipper" чи "octoprint"
-    api_key: str = ""          # API-ключ
-    name: str = "Default Printer" # Назва принтера для мульти-вкладок
+    type: str = "klipper"      
+    api_key: str = ""          
+    name: str = "Default Printer" 
 
 class RevokeRequest(BaseModel):
     token: str
@@ -402,7 +419,6 @@ def revoke_session(payload: RevokeRequest, credentials: HTTPAuthorizationCredent
 
 @app.get("/api/printers", dependencies=[Depends(get_current_user)])
 def get_printers_list():
-    """Ендпоінт повертає список усіх принтерів для побудови вкладок"""
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
@@ -502,7 +518,6 @@ async def update_printer_ip_compatibility(payload: IPRequest):
 
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    # Шукаємо принтер за назвою для уникнення зациклень на одному дефолтному
     cursor.execute("SELECT id FROM printers WHERE name=?", (name,))
     row = cursor.fetchone()
     
@@ -639,11 +654,14 @@ async def import_from_spoolman(payload: SpoolmanImportRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- ПУБЛІЧНИЙ mDNS Скан ---
+
+# --- ПУБЛІЧНИЙ mDNS Скан через TCP ---
 @app.post("/settings/scan", dependencies=[Depends(get_current_user)])
-def scan_printers():
-    """Ендпоінт сканування Klipper та OctoPrint (виправлено 404)"""
-    return {"status": "success", "printers": scan_network_for_printers()}
+async def scan_printers():
+    """Ендпоінт безвідмовного асинхронного TCP сканування портів 7125 та 5000 у вашій мережі"""
+    found = await scan_network_for_printers_tcp()
+    return {"status": "success", "printers": found}
+
 
 # --- Веб-інтерфейс ---
 @app.get("/", response_class=HTMLResponse)
