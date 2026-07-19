@@ -1,7 +1,7 @@
 
 
 git add .
-git commit -m "chore: фікс для вінди"
+git commit -m "chore: + пітримка octoprint і кількох принтерів"
 git push origin main
 
 uvicorn main:app --reload      запуск сервака 

@@ -55,9 +55,7 @@ def init_db():
         )
     """)
     
-    # --- ТАБЛИЦІ ФІЛАМЕНТУ (Сумісні зі Spoolman) ---
-
-    # Таблиця Виробників (vendor)
+    # --- ТАБЛИЦІ ФІЛАМЕНТУ ---
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS vendor (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,8 +64,6 @@ def init_db():
             deleted INTEGER DEFAULT 0
         )
     """)
-
-    # Таблиця Типів філаменту (filament)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS filament (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,8 +83,6 @@ def init_db():
             FOREIGN KEY(vendor_id) REFERENCES vendor(id)
         )
     """)
-
-    # Таблиця Котушок (spool)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS spool (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -106,8 +100,6 @@ def init_db():
             FOREIGN KEY(filament_id) REFERENCES filament(id)
         )
     """)
-
-    # Нова таблиця принтерів
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS printers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,7 +116,7 @@ def init_db():
         cursor.execute("ALTER TABLE sessions ADD COLUMN user_agent TEXT")
         cursor.execute("ALTER TABLE sessions ADD COLUMN created_at REAL")
     except sqlite3.OperationalError:
-        pass  # Колонки вже існують
+        pass
         
     conn.commit()
     conn.close()
@@ -134,47 +126,26 @@ def init_db():
 def parse_user_agent(ua_string: str) -> str:
     if not ua_string:
         return "Невідомий пристрій"
-    
     ua_string = ua_string.lower()
     os_name = "Unknown OS"
-    if "windows" in ua_string:
-        os_name = "Windows"
-    elif "android" in ua_string:
-        os_name = "Android"
-    elif "iphone" in ua_string or "ipad" in ua_string or "ipod" in ua_string:
-        os_name = "iOS"
-    elif "macintosh" in ua_string or "mac os" in ua_string:
-        os_name = "macOS"
-    elif "linux" in ua_string:
-        os_name = "Linux"
-    elif "x11" in ua_string:
-        os_name = "Unix/Linux"
-        
+    if "windows" in ua_string: os_name = "Windows"
+    elif "android" in ua_string: os_name = "Android"
+    elif "iphone" in ua_string or "ipad" in ua_string: os_name = "iOS"
+    elif "macintosh" in ua_string or "mac os" in ua_string: os_name = "macOS"
+    elif "linux" in ua_string: os_name = "Linux"
+    
     browser_name = "Unknown Browser"
-    if "vivaldi" in ua_string:
-        browser_name = "Vivaldi"
-    elif "yabrowser" in ua_string:
-        browser_name = "Yandex Browser"
-    elif "opr" in ua_string or "opera" in ua_string or "opios" in ua_string:
-        browser_name = "Opera"
-    elif "edg" in ua_string or "edge" in ua_string or "edgios" in ua_string or "edga" in ua_string:
-        browser_name = "Edge"
-    elif "brave" in ua_string:
-        browser_name = "Brave"
-    elif "electron" in ua_string:
-        browser_name = "Electron App"
-    elif "vscode" in ua_string or "code/" in ua_string:
-        browser_name = "VS Code Browser"
-    elif "firefox" in ua_string or "fxios" in ua_string:
-        browser_name = "Firefox"
-    elif "chrome" in ua_string or "chromium" in ua_string or "crios" in ua_string:
-        browser_name = "Chrome"
-    elif "safari" in ua_string:
-        browser_name = "Safari"
-        
+    if "vivaldi" in ua_string: browser_name = "Vivaldi"
+    elif "yabrowser" in ua_string: browser_name = "Yandex Browser"
+    elif "opr" in ua_string or "opera" in ua_string: browser_name = "Opera"
+    elif "edg" in ua_string or "edge" in ua_string: browser_name = "Edge"
+    elif "brave" in ua_string: browser_name = "Brave"
+    elif "firefox" in ua_string: browser_name = "Firefox"
+    elif "chrome" in ua_string: browser_name = "Chrome"
+    elif "safari" in ua_string: browser_name = "Safari"
     return f"{browser_name} ({os_name})"
 
-# --- Безпечне хешування паролів ---
+# --- Хешування та сесії ---
 def hash_password(password: str) -> str:
     salt = os.urandom(16)
     pwdhash = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 100000)
@@ -186,10 +157,8 @@ def verify_password(stored_password: str, provided_password: str) -> bool:
         salt = bytes.fromhex(salt_hex)
         pwdhash = hashlib.pbkdf2_hmac("sha256", provided_password.encode("utf-8"), salt, 100000)
         return pwdhash.hex() == hash_hex
-    except Exception:
-        return False
+    except Exception: return False
 
-# --- Керування сесіями ---
 def create_session(user_id: int, ip_address: str, user_agent: str) -> str:
     token = os.urandom(24).hex()
     created_at = time.time()
@@ -205,36 +174,21 @@ def create_session(user_id: int, ip_address: str, user_agent: str) -> str:
     return token
 
 def verify_session_token(token: str) -> int:
-    if not token:
-        raise HTTPException(status_code=401, detail="Токен відсутній")
+    if not token: raise HTTPException(status_code=401, detail="Токен відсутній")
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("SELECT user_id, expires_at FROM sessions WHERE token=?", (token,))
     row = cursor.fetchone()
     conn.close()
-
-    if not row:
-        raise HTTPException(status_code=401, detail="Невірний або застарілий токен")
-    
+    if not row: raise HTTPException(status_code=401, detail="Невірний токен")
     user_id, expires_at = row
-    if time.time() > expires_at:
-        raise HTTPException(status_code=401, detail="Термін дії сесії закінчився")
+    if time.time() > expires_at: raise HTTPException(status_code=401, detail="Сесія застаріла")
     return user_id
 
-# Ініціалізація схеми безпеки
 security_scheme = HTTPBearer()
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security_scheme)):
     return verify_session_token(credentials.credentials)
-
-# --- Робота з IP ---
-def get_saved_ip() -> str:
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("SELECT value FROM settings WHERE key='printer_ip'")
-    row = cursor.fetchone()
-    conn.close()
-    return row[0] if row else ""
 
 def save_ip_to_db(ip: str):
     conn = sqlite3.connect(DB_FILE)
@@ -243,44 +197,51 @@ def save_ip_to_db(ip: str):
     conn.commit()
     conn.close()
 
-# --- mDNS сканер ---
-class MoonrakerListener(ServiceListener):
+
+# --- ОБ'ЄДНАНИЙ mDNS Скан для Klipper та OctoPrint ---
+class PrinterDiscoveryListener(ServiceListener):
     def __init__(self):
         self.printers = []
+
     def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
         info = zc.get_service_info(type_, name)
         if info:
             addresses = [socket.inet_ntoa(addr) for addr in info.addresses]
+            p_type = "klipper" if "moonraker" in type_ else "octoprint"
             self.printers.append({
                 "name": name.split('.')[0],
+                "type": p_type,
                 "ip": addresses[0] if addresses else "unknown",
                 "port": info.port
             })
+
     def update_service(self, zc: Zeroconf, type_: str, name: str) -> None: pass
     def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None: pass
 
 def scan_network_for_printers() -> list:
+    print("[mDNS SCAN LOG] Початок сканування мережі для Klipper та OctoPrint...", flush=True)
     zc = Zeroconf()
-    listener = MoonrakerListener()
-    browser = ServiceBrowser(zc, "_moonraker._tcp.local.", listener)
+    listener = PrinterDiscoveryListener()
+    # Запускаємо паралельно два сканери на обидві системи
+    browser_klipper = ServiceBrowser(zc, "_moonraker._tcp.local.", listener)
+    browser_octo = ServiceBrowser(zc, "_octoprint._tcp.local.", listener)
     time.sleep(2.0)
     zc.close()
+    print(f"[mDNS SCAN LOG] Сканування завершено. Знайдено пристроїв: {len(listener.printers)}", flush=True)
     return listener.printers
 
 
-# --- Ініціалізація додатку ---
+# --- Ініціалізація бази та менеджера ---
 init_db()
 manager = PrinterManager()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # При старті сервера завантажуємо та запускаємо всі принтери у фонових процесах
     manager.load_all_printers()
     yield
-    # При зупинці вимикаємо всі фонові процеси
     await manager.shutdown()
 
-app = FastAPI(title="Secure Klipper Hub", lifespan=lifespan)
+app = FastAPI(title="Secure Printer Gateway", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -303,7 +264,8 @@ class LoginRequest(BaseModel):
 class IPRequest(BaseModel):
     ip: str
     type: str = "klipper"      # "klipper" чи "octoprint"
-    api_key: str = ""          # Ключ авторизації для OctoPrint
+    api_key: str = ""          # API-ключ
+    name: str = "Default Printer" # Назва принтера для мульти-вкладок
 
 class RevokeRequest(BaseModel):
     token: str
@@ -313,7 +275,7 @@ class SpoolmanImportRequest(BaseModel):
 
 class NewPrinterRequest(BaseModel):
     name: str
-    type: str  # "klipper" чи "octoprint"
+    type: str
     host: str
     port: int
     api_key: str = None
@@ -336,10 +298,9 @@ def register_user(payload: RegisterRequest, request: Request):
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM users")
     count = cursor.fetchone()[0]
-    
     if count > 0:
         conn.close()
-        raise HTTPException(status_code=400, detail="Реєстрація закрита. Адміністратора вже створено.")
+        raise HTTPException(status_code=400, detail="Реєстрація закрита.")
     
     hashed = hash_password(payload.password)
     try:
@@ -377,7 +338,6 @@ def login_user(payload: LoginRequest, request: Request):
 
 @app.get("/api/auth/sessions")
 def get_active_sessions(credentials: HTTPAuthorizationCredentials = Depends(security_scheme)):
-    """Отримати список усіх підключених пристроїв"""
     current_token = credentials.credentials
     current_user_id = verify_session_token(current_token)
     
@@ -419,7 +379,7 @@ def revoke_session(payload: RevokeRequest, credentials: HTTPAuthorizationCredent
 
 @app.get("/api/printers", dependencies=[Depends(get_current_user)])
 def get_printers_list():
-    """Повертає список усіх зареєстрованих принтерів з SQLite для малювання вкладок"""
+    """Ендпоінт повертає список усіх принтерів для побудови вкладок"""
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
@@ -438,7 +398,7 @@ def get_printers_list():
             })
         return {"status": "success", "printers": printers}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Помилка зчитування списку принтерів: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Помилка: {e}")
 
 @app.post("/api/printers", dependencies=[Depends(get_current_user)])
 async def add_new_printer(payload: NewPrinterRequest):
@@ -452,7 +412,6 @@ async def add_new_printer(payload: NewPrinterRequest):
     new_id = cursor.lastrowid
     conn.close()
     
-    # Відразу «на льоту» ініціалізуємо та запускаємо новий принтер у фоні!
     manager.start_printer_client(new_id, payload.type, payload.host, payload.port, payload.api_key)
     return {"status": "success", "printer_id": new_id}
 
@@ -502,6 +461,7 @@ async def update_printer_ip_compatibility(payload: IPRequest):
     ip = payload.ip.strip()
     p_type = payload.type.strip().lower()
     api_key = payload.api_key.strip() if payload.api_key else ""
+    name = payload.name.strip() if payload.name else "Default Printer"
     
     if not ip:
         raise HTTPException(status_code=400, detail="IP не може бути пустим")
@@ -519,7 +479,8 @@ async def update_printer_ip_compatibility(payload: IPRequest):
 
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute("SELECT id FROM printers WHERE name='Default Printer'")
+    # Шукаємо принтер за назвою для уникнення зациклень на одному дефолтному
+    cursor.execute("SELECT id FROM printers WHERE name=?", (name,))
     row = cursor.fetchone()
     
     if row:
@@ -531,21 +492,20 @@ async def update_printer_ip_compatibility(payload: IPRequest):
         conn.commit()
         conn.close()
         
-        # Миттєво перезапускаємо клієнт
         if p_id in manager.clients:
             await manager.stop_printer_client(p_id)
         manager.start_printer_client(p_id, p_type, host, port, api_key)
     else:
         cursor.execute(
-            "INSERT INTO printers (name, type, host, port, api_key) VALUES ('Default Printer', ?, ?, ?, ?)",
-            (p_type, host, port, api_key)
+            "INSERT INTO printers (name, type, host, port, api_key) VALUES (?, ?, ?, ?, ?)",
+            (name, p_type, host, port, api_key)
         )
         conn.commit()
         new_id = cursor.lastrowid
         conn.close()
         manager.start_printer_client(new_id, p_type, host, port, api_key)
         
-    return {"status": "success", "saved_ip": ip, "type": p_type}
+    return {"status": "success", "saved_ip": ip, "type": p_type, "name": name}
 
 
 # --- ЕНДПОІНТИ КЕРУВАННЯ ФІЛАМЕНТОМ (SPOOLMAN) ---
@@ -593,37 +553,28 @@ async def import_from_spoolman(payload: SpoolmanImportRequest):
     base_url = payload.spoolman_url.strip().rstrip("/")
     if not base_url.endswith("/api/v1"):
         base_url = f"{base_url}/api/v1"
-        
-    print(f"[SPOOLMAN IMPORT] Початок імпорту з {base_url}...", flush=True)
     
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             v_resp = await client.get(f"{base_url}/vendor")
-            if v_resp.status_code != 200:
-                raise HTTPException(status_code=400, detail=f"Помилка завантаження виробників: {v_resp.status_code}")
+            if v_resp.status_code != 200: raise HTTPException(status_code=400)
             vendors = v_resp.json()
             
             f_resp = await client.get(f"{base_url}/filament")
-            if f_resp.status_code != 200:
-                raise HTTPException(status_code=400, detail=f"Помилка завантаження пластику: {f_resp.status_code}")
+            if f_resp.status_code != 200: raise HTTPException(status_code=400)
             filaments = f_resp.json()
             
             s_resp = await client.get(f"{base_url}/spool")
-            if s_resp.status_code != 200:
-                raise HTTPException(status_code=400, detail=f"Помилка завантаження котушок: {s_resp.status_code}")
+            if s_resp.status_code != 200: raise HTTPException(status_code=400)
             spools = s_resp.json()
-
-        print("[SPOOLMAN IMPORT] Дані завантажено. Запис в SQLite...", flush=True)
 
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         cursor.execute("PRAGMA foreign_keys = OFF")
 
         for v in vendors:
-            cursor.execute("""
-                INSERT OR REPLACE INTO vendor (id, name, comment, deleted)
-                VALUES (?, ?, ?, ?)
-            """, (v.get("id"), v.get("name"), v.get("comment"), 1 if v.get("deleted") else 0))
+            cursor.execute("INSERT OR REPLACE INTO vendor (id, name, comment, deleted) VALUES (?, ?, ?, ?)", 
+                           (v.get("id"), v.get("name"), v.get("comment"), 1 if v.get("deleted") else 0))
             
         for f in filaments:
             vendor_id = f.get("vendor", {}).get("id") if f.get("vendor") else None
@@ -645,7 +596,6 @@ async def import_from_spoolman(payload: SpoolmanImportRequest):
         for s in spools:
             filament_id = s.get("filament", {}).get("id") if s.get("filament") else None
             extra_val = json.dumps(s.get("extra")) if s.get("extra") else None
-            
             cursor.execute("""
                 INSERT OR REPLACE INTO spool (
                     id, filament_id, registered, first_used, last_used, 
@@ -662,28 +612,21 @@ async def import_from_spoolman(payload: SpoolmanImportRequest):
         cursor.execute("PRAGMA foreign_keys = ON")
         conn.commit()
         conn.close()
-        
-        print(f"[SPOOLMAN IMPORT SUCCESS] Успішно імпортовано: {len(vendors)} виробників, {len(filaments)} пластику, {len(spools)} котушок.", flush=True)
-        return {
-            "status": "success",
-            "imported": {
-                "vendors": len(vendors),
-                "filaments": len(filaments),
-                "spools": len(spools)
-            }
-        }
+        return {"status": "success", "imported": {"vendors": len(vendors), "filaments": len(filaments), "spools": len(spools)}}
     except Exception as e:
-        print(f"[SPOOLMAN IMPORT ERROR] Помилка: {e}", flush=True)
-        raise HTTPException(status_code=500, detail=f"Помилка імпорту: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
+# --- ПУБЛІЧНИЙ mDNS Скан ---
+@app.post("/settings/scan", dependencies=[Depends(get_current_user)])
+def scan_printers():
+    """Ендпоінт сканування Klipper та OctoPrint (виправлено 404)"""
+    return {"status": "success", "printers": scan_network_for_printers()}
 
-# --- Візуальний інтерфейс (HTML + JS) ---
+# --- Веб-інтерфейс ---
 @app.get("/", response_class=HTMLResponse)
 def get_home_page():
-    # Зчитуємо HTML-шаблон з окремого файлу
     html_path = os.path.join(BASE_DIR, "templates", "index.html")
     try:
-        with open(html_path, "r", encoding="utf-8") as f:
-            return f.read()
+        with open(html_path, "r", encoding="utf-8") as f: return f.read()
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Файл шаблону templates/index.html не знайдено.")
