@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Unified Printer Hub (Secure Sessions)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 font-sans min-h-screen flex items-center justify-center">
+    
+    <!-- Блок Авторизації -->
+    <div id="auth-box" class="bg-gray-800 p-8 rounded-lg shadow-lg border border-gray-700 w-full max-w-md">
+        <h2 id="auth-title" class="text-2xl font-bold text-center text-blue-500 mb-2">Завантаження...</h2>
+        <p id="auth-subtitle" class="text-xs text-gray-400 text-center mb-6">Перевірка стану системи...</p>
+        
+        <form id="auth-form" onsubmit="handleAuth(event)" class="space-y-4">
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Email</label>
+                <input id="auth-email" type="email" required class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500 text-white">
+            </div>
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Пароль</label>
+                <input id="auth-password" type="password" required class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500 text-white">
+            </div>
+            <button id="auth-btn" type="submit" class="w-full bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold py-2.5 rounded transition">Увійти</button>
+        </form>
+    </div>
+
+    <!-- Головна Панель Керування -->
+    <div id="main-panel" class="container mx-auto p-6 max-w-4xl hidden self-start">
+        <header class="mb-8 flex justify-between items-center">
+            <div>
+                <h1 class="text-3xl font-extrabold text-blue-500">Abstract Spaghetti Syndicate</h1>
+                <p class="text-gray-400 text-xs">Безпечна панель моніторингу принтера</p>
+            </div>
+            <div>
+                <button onclick="handleLogout()" class="bg-gray-700 hover:bg-gray-600 text-white text-xs font-bold px-4 py-2 rounded transition">Вийти</button>
+            </div>
+        </header>
+
+        <!-- Основна Сітка -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            
+            <!-- Ліва колонка: Монітор принтера -->
+            <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700 flex flex-col h-[550px]">
+                <h2 class="text-xl font-bold mb-4 border-b border-gray-700 pb-2">Монітор принтера</h2>
+                
+                <!-- ВКЛАДКИ ДЛЯ ВИБОРУ ПРИНТЕРА (Динамічні) -->
+                <div class="flex-shrink-0 mb-4">
+                    <p class="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2">Оберіть активний принтер:</p>
+                    <div id="printer-tabs-container" class="flex flex-wrap gap-1.5">
+                        <!-- Кнопки-вкладки будуть згенеровані через JS -->
+                    </div>
+                </div>
+
+                <div class="space-y-2 mb-3">
+                    <div class="flex justify-between items-center text-xs">
+                        <span class="text-gray-400">IP та система:</span>
+                        <span id="current-ip" class="font-mono text-blue-400 font-bold">...</span>
+                    </div>
+                    <div class="flex justify-between items-center text-xs">
+                        <span class="text-gray-400">Статус:</span>
+                        <span id="connection-status" class="inline-block px-2 py-0.5 rounded text-[10px] font-bold bg-gray-700 text-gray-300">...</span>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-3 mb-4">
+                    <div class="bg-gray-900 p-3 rounded text-center border border-gray-800">
+                        <p class="text-[10px] text-gray-500 font-bold uppercase">Екструдер</p>
+                        <p id="temp-extruder" class="text-xl font-extrabold text-red-500">0.0°C</p>
+                        <p id="target-extruder" class="text-[10px] text-gray-400">Ціль: 0°C</p>
+                    </div>
+                    <div class="bg-gray-900 p-3 rounded text-center border border-gray-800">
+                        <p class="text-[10px] text-gray-500 font-bold uppercase">Стіл</p>
+                        <p id="temp-bed" class="text-xl font-extrabold text-yellow-500">0.0°C</p>
+                        <p id="target-bed" class="text-[10px] text-gray-400">Ціль: 0°C</p>
+                    </div>
+                </div>
+
+                <p class="text-[11px] font-bold text-gray-400 mb-1.5 uppercase tracking-wider">Усі датчики обраної системи:</p>
+                <div id="dynamic-sensors-container" class="flex-1 overflow-y-auto space-y-2 pr-1 scrollbar-thin scrollbar-thumb-gray-700"></div>
+            </div>
+
+            <!-- Права колонка: Налаштування та пристрої -->
+            <div class="space-y-6">
+                <!-- Налаштування IP -->
+                <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700">
+                    <h2 class="text-lg font-bold text-white mb-2">Спосіб 1: Зберегти IP у базу (SQLite)</h2>
+                    <p class="text-xs text-gray-400 mb-4">Оберіть систему вашого принтера та вкажіть його параметри.</p>
+                    
+                    <div class="space-y-3">
+                        <!-- Випадаюче меню для вибору типу ОС -->
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1">Оберіть систему принтера:</label>
+                            <select id="printer-type-select" onchange="togglePrinterTypeFields()" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500 text-white font-bold">
+                                <option value="klipper" selected>Klipper (Moonraker)</option>
+                                <option value="octoprint">OctoPrint (Marlin)</option>
+                            </select>
+                        </div>
+
+                        <!-- Поле введення IP адреси -->
+                        <div>
+                            <label id="ip-input-label" class="block text-xs text-gray-400 mb-1">IP-адреса або хост Klipper:</label>
+                            <input id="manual-ip-input" type="text" placeholder="напр. 192.168.1.115 або localhost" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500 text-mono text-white">
+                        </div>
+
+                        <!-- Поле введення API-ключа (приховане за замовчуванням) -->
+                        <div id="api-key-container" class="hidden">
+                            <label class="block text-xs text-gray-400 mb-1">OctoPrint API Key:</label>
+                            <input id="manual-api-key" type="password" placeholder="Вставте згенерований API-ключ" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500 text-mono text-white">
+                        </div>
+
+                        <button onclick="saveManualIP()" class="w-full bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold py-2 rounded transition">Зберегти налаштування</button>
+                    </div>
+                </div>
+
+                <!-- Пошук mDNS -->
+                <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700">
+                    <h2 class="text-lg font-bold text-white mb-2">Спосіб 2: Автоматичний пошук (mDNS)</h2>
+                    <button id="scan-btn" onclick="startScan()" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold py-2 px-4 rounded transition">🔍 Сканувати мережу</button>
+                    <div id="scan-results" class="mt-4 space-y-2 hidden">
+                        <p class="text-xs font-semibold text-gray-400 border-b border-gray-700 pb-1">Знайдені пристрої:</p>
+                        <div id="printers-list" class="max-h-40 overflow-y-auto space-y-2"></div>
+                    </div>
+                </div>
+
+                <!-- Імпорт зі Spoolman -->
+                <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700">
+                    <h2 class="text-lg font-bold text-white mb-2">Імпорт бази зі Spoolman</h2>
+                    <p class="text-xs text-gray-400 mb-4">Синхронізувати всіх виробників, філаменти та котушки з віддаленого сервера.</p>
+                    <div class="flex gap-2">
+                        <input id="spoolman-url-input" type="text" placeholder="напр. http://192.168.1.50:7912" class="bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm flex-1 focus:outline-none focus:border-blue-500 text-mono text-white">
+                        <button onclick="importFromSpoolman(this)" class="bg-purple-600 hover:bg-purple-500 text-white text-sm font-bold px-4 py-2 rounded transition">Імпортувати</button>
+                    </div>
+                </div>
+
+                <!-- Список активних сесій -->
+                <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700">
+                    <h2 class="text-lg font-bold text-white mb-1">Підключені пристрої</h2>
+                    <p class="text-xs text-gray-400 mb-4">Список ваших активних сесій на інших гаджетах.</p>
+                    <div id="sessions-list" class="space-y-2 max-h-44 overflow-y-auto pr-1"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Список котушок -->
+        <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700 mt-6">
+            <h2 class="text-xl font-bold mb-2 border-b border-gray-700 pb-2">Мої котушки філаменту</h2>
+            <p class="text-xs text-gray-400 mb-4">Список активних та імпортованих котушок, збережених у локальній базі даних.</p>
+            
+            <div id="spools-list-container" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 max-h-96 overflow-y-auto pr-1">
+                <p class="text-xs text-gray-500 py-6 text-center col-span-full">Очікування завантаження списку котушок...</p>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        let isSystemRegistered = false;
+        let pollingInterval = null;
+        let activePrinterId = null;       // ID обраного для перегляду принтера
+        let registeredPrinters = [];      // Список усіх принтерів для мапування IP
+
+        async function checkAuthStatus() {
+            try {
+                const response = await fetch("/api/auth/status");
+                const data = await response.json();
+                isSystemRegistered = data.is_registered;
+
+                const titleEl = document.getElementById("auth-title");
+                const subtitleEl = document.getElementById("auth-subtitle");
+                const btnEl = document.getElementById("auth-btn");
+
+                if (isSystemRegistered) {
+                    titleEl.innerText = "Авторизація";
+                    subtitleEl.innerText = "Увійдіть, щоб отримати доступ до принтера";
+                    btnEl.innerText = "Увійти";
+                } else {
+                    titleEl.innerText = "Первинне налаштування";
+                    subtitleEl.innerText = "Створіть акаунт адміністратора системи";
+                    btnEl.innerText = "Зареєструватися";
+                }
+
+                const token = localStorage.getItem("session_token");
+                if (token) {
+                    showMainPanel();
+                }
+            } catch (e) {
+                console.error("Помилка ініціалізації авторизації:", e);
+            }
+        }
+
+        async function handleAuth(event) {
+            event.preventDefault();
+            const email = document.getElementById("auth-email").value;
+            const password = document.getElementById("auth-password").value;
+
+            const endpoint = isSystemRegistered ? "/api/auth/login" : "/api/auth/register";
+
+            try {
+                const response = await fetch(endpoint, {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({email, password})
+                });
+
+                if (!response.ok) {
+                    const err = await response.json();
+                    alert("Помилка: " + (err.detail || "Невідома помилка"));
+                    return;
+                }
+
+                const data = await response.json();
+                if (data.status === "success" && data.token) {
+                    localStorage.setItem("session_token", data.token);
+                    showMainPanel();
+                }
+            } catch (e) {
+                alert("Помилка з'єднання з сервером.");
+            }
+        }
+
+        function showMainPanel() {
+            document.body.className = "bg-gray-900 text-gray-100 font-sans min-h-screen flex items-start justify-start";
+            document.getElementById("auth-box").classList.add("hidden");
+            document.getElementById("main-panel").classList.remove("hidden");
+            
+            if (!pollingInterval) {
+                // Спершу завантажуємо вкладки принтерів, а потім запускаємо інтервальне опитування
+                loadPrinterTabs().then(() => {
+                    pollingInterval = setInterval(pollStatus, 1500);
+                    pollStatus();
+                });
+                loadSessions();
+                loadSpools();
+            }
+        }
+
+        function handleLogout() {
+            localStorage.removeItem("session_token");
+            if (pollingInterval) {
+                clearInterval(pollingInterval);
+                pollingInterval = null;
+            }
+            activePrinterId = null;
+            document.body.className = "bg-gray-900 text-gray-100 font-sans min-h-screen flex items-center justify-center";
+            document.getElementById("main-panel").classList.add("hidden");
+            document.getElementById("auth-box").classList.remove("hidden");
+            checkAuthStatus();
+        }
+
+        async function secureFetch(url, options = {}) {
+            const token = localStorage.getItem("session_token");
+            if (!options.headers) options.headers = {};
+            options.headers["Authorization"] = "Bearer " + token;
+
+            const response = await fetch(url, options);
+            if (response.status === 401) {
+                handleLogout();
+                throw new Error("Unauthorized");
+            }
+            return response;
+        }
+
+        // Динамічне завантаження списку принтерів та малювання кнопок-вкладок
+        async function loadPrinterTabs() {
+            try {
+                const response = await secureFetch("/api/printers");
+                const data = await response.json();
+                const container = document.getElementById("printer-tabs-container");
+                container.innerHTML = "";
+                
+                registeredPrinters = data.printers || [];
+
+                if (registeredPrinters.length > 0) {
+                    // Якщо активного принтера немає — обираємо перший
+                    if (!activePrinterId) {
+                        activePrinterId = registeredPrinters[0].id;
+                    }
+
+                    registeredPrinters.forEach(printer => {
+                        const btn = document.createElement("button");
+                        const isActive = printer.id === activePrinterId;
+                        
+                        btn.className = isActive 
+                            ? "bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-extrabold px-3 py-1 rounded transition uppercase tracking-wider"
+                            : "bg-gray-900 hover:bg-gray-800 text-gray-400 text-[10px] font-extrabold px-3 py-1 rounded transition uppercase tracking-wider border border-gray-800";
+                        
+                        btn.innerText = printer.name;
+                        btn.onclick = () => {
+                            activePrinterId = printer.id;
+                            loadPrinterTabs(); // перемальовуємо вкладки
+                            pollStatus();      // миттєво оновлюємо телеметрію
+                        };
+                        container.appendChild(btn);
+                    });
+                } else {
+                    container.innerHTML = '<p class="text-xs text-gray-500 py-1">Жодного принтера ще не додано.</p>';
+                    activePrinterId = null;
+                }
+            } catch (e) {
+                console.error("Помилка завантаження вкладок принтерів:", e);
+            }
+        }
+
+        async function loadSessions() {
+            try {
+                const response = await secureFetch("/api/auth/sessions");
+                const data = await response.json();
+                const listDiv = document.getElementById("sessions-list");
+                listDiv.innerHTML = "";
+                
+                data.forEach(sess => {
+                    const item = document.createElement("div");
+                    item.className = "flex items-center justify-between bg-gray-900 p-2.5 rounded text-xs border border-gray-950";
+                    const currentBadge = sess.is_current ? `<span class="bg-blue-900/60 text-blue-300 px-1 py-0.5 rounded text-[9px] font-bold">Цей пристрій</span>` : "";
+                    
+                    item.innerHTML = `
+                        <div>
+                            <span class="font-bold text-gray-200 block">${sess.device} ${currentBadge}</span>
+                            <span class="text-gray-500 font-mono text-[10px]">${sess.ip} | ${sess.date}</span>
+                        </div>
+                        ${sess.is_current ? "" : `<button onclick="revokeSession('${sess.token}')" class="bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 px-2 py-1 rounded transition text-[10px] font-bold">Закрити</button>`}
+                    `;
+                    listDiv.appendChild(item);
+                });
+            } catch (e) {
+                console.error("Помилка завантаження сесій:", e);
+            }
+        }
+
+        async function revokeSession(tokenToRevoke) {
+            if (!confirm("Ви дійсно хочете закрити сесію для цього пристрою?")) return;
+            try {
+                const response = await secureFetch("/api/auth/sessions/revoke", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({token: tokenToRevoke})
+                });
+                const result = await response.json();
+                if (result.status === "success") {
+                    loadSessions();
+                }
+            } catch (e) {
+                alert("Помилка закриття сесії.");
+            }
+        }
+
+        async function loadSpools() {
+            try {
+                const response = await secureFetch("/api/spools");
+                const data = await response.json();
+                const container = document.getElementById("spools-list-container");
+                container.innerHTML = "";
+
+                if (data.status === "success" && data.spools.length > 0) {
+                    data.spools.forEach(spool => {
+                        const remaining = spool.initial_weight - spool.used_weight;
+                        const percentage = Math.max(0, Math.min(100, (remaining / spool.initial_weight) * 100));
+                        
+                        const card = document.createElement("div");
+                        card.className = "bg-gray-900 p-3.5 rounded border border-gray-800 flex flex-col justify-between";
+                        
+                        const colorMarker = spool.color_hex ? `<span class="inline-block w-3 h-3 rounded-full border border-gray-700 mr-1.5 align-middle" style="background-color: #${spool.color_hex}"></span>` : "";
+
+                        card.innerHTML = `
+                            <div>
+                                <div class="flex justify-between items-start mb-1">
+                                    <span class="text-gray-500 font-mono text-[10px] font-bold uppercase tracking-wider">${spool.vendor}</span>
+                                    <span class="bg-blue-950/60 text-blue-300 text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase">${spool.material}</span>
+                                </div>
+                                <h3 class="text-xs font-bold text-gray-200 flex items-center mb-3">
+                                    ${colorMarker}
+                                    ${spool.name || "Філамент #" + spool.id}
+                                </h3>
+                            </div>
+                            <div class="space-y-1">
+                                <div class="flex justify-between text-[11px]">
+                                    <span class="text-gray-400">Залишилося:</span>
+                                    <span class="font-mono font-bold text-emerald-400">${remaining.toFixed(0)}г / ${spool.initial_weight.toFixed(0)}г</span>
+                                </div>
+                                <div class="w-full bg-gray-800 rounded-full h-1.5 overflow-hidden">
+                                    <div class="bg-emerald-500 h-1.5 rounded-full transition-all duration-500" style="width: ${percentage}%"></div>
+                                </div>
+                            </div>
+                        `;
+                        container.appendChild(card);
+                    });
+                } else {
+                    container.innerHTML = '<p class="text-xs text-gray-500 py-6 text-center col-span-full">У вашій базі немає жодної активної котушки. Виконайте імпорт або додайте котушки.</p>';
+                }
+            } catch (e) {
+                console.error("Помилка завантаження котушок:", e);
+            }
+        }
+
+        async function importFromSpoolman(btn) {
+            const url = document.getElementById("spoolman-url-input").value;
+            if (!url) return alert("Будь ласка, введіть URL вашого сервера Spoolman.");
+
+            if (!confirm("Ви дійсно хочете завантажити дані? Це може перезаписати локальні записи з такими ж ID.")) return;
+
+            const oldText = btn.innerText;
+            btn.innerText = "⏳ Йде імпорт...";
+            btn.disabled = true;
+
+            try {
+                const response = await secureFetch("/api/spoolman/import", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({spoolman_url: url})
+                });
+                
+                if (!response.ok) {
+                    const err = await response.json();
+                    alert("Помилка: " + (err.detail || "Не вдалося виконати імпорт"));
+                    return;
+                }
+
+                const result = await response.json();
+                if (result.status === "success") {
+                    alert("Успішно імпортовано:\\n- Виробників: " + result.imported.vendors + "\\n- Пластику: " + result.imported.filaments + "\\n- Котушок: " + result.imported.spools);
+                    document.getElementById("spoolman-url-input").value = "";
+                    loadSpools();
+                } else {
+                    alert("Помилка імпорту.");
+                }
+            } catch (e) {
+                alert("Помилка з'єднання з сервером під час імпорту.");
+            } finally {
+                btn.innerText = oldText;
+                btn.disabled = false;
+            }
+        }
+
+        // Інтерактивне відображення полів залежно від типу принтера
+        function togglePrinterTypeFields() {
+            const select = document.getElementById("printer-type-select");
+            const apiKeyContainer = document.getElementById("api-key-container");
+            const ipInput = document.getElementById("manual-ip-input");
+            const ipLabel = document.getElementById("ip-input-label");
+
+            if (select.value === "klipper") {
+                apiKeyContainer.classList.add("hidden");
+                ipLabel.innerText = "IP-адреса або хост Klipper:";
+                ipInput.placeholder = "напр. 192.168.1.115 або localhost";
+            } else if (select.value === "octoprint") {
+                apiKeyContainer.classList.remove("hidden");
+                ipLabel.innerText = "IP-адреса або хост OctoPrint (з портом):";
+                ipInput.placeholder = "напр. 100.120.186.58:5000";
+            }
+        }
+
+        async function pollStatus() {
+            // Якщо жодного принтера в базі немає — виводимо пустий монітор
+            if (!activePrinterId) {
+                document.getElementById("current-ip").innerText = "Не налаштовано";
+                document.getElementById("connection-status").innerText = "НЕМАЄ ЗВ'ЯЗКУ (NOT_CONFIGURED)";
+                document.getElementById("connection-status").className = "px-2 py-0.5 rounded text-[10px] font-bold bg-rose-950 text-rose-300";
+                document.getElementById("temp-extruder").innerText = "0.0°C";
+                document.getElementById("target-extruder").innerText = "Ціль: 0°C";
+                document.getElementById("temp-bed").innerText = "0.0°C";
+                document.getElementById("target-bed").innerText = "Ціль: 0°C";
+                document.getElementById("dynamic-sensors-container").innerHTML = '<p class="text-xs text-gray-500 text-center py-8">Додайте принтер у меню праворуч.</p>';
+                return;
+            }
+
+            try {
+                // Робимо асинхронний запит до конкретного принтера
+                const response = await secureFetch("/api/printers/" + activePrinterId + "/status");
+                const data = await response.json();
+                
+                // Намагаємося знайти красиве ім'я та IP принтера в нашому списку
+                const printerInfo = registeredPrinters.find(p => p.id === activePrinterId);
+                const hostStr = printerInfo ? `${printerInfo.host}:${printerInfo.port} (${printerInfo.type.toUpperCase()})` : "...";
+                
+                document.getElementById("current-ip").innerText = hostStr;
+                
+                const statusEl = document.getElementById("connection-status");
+                if (data.connected) {
+                    statusEl.innerText = "ПІДКЛЮЧЕНО (" + data.telemetry.print_state.toUpperCase() + ")";
+                    statusEl.className = "px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-900 text-emerald-300";
+                } else {
+                    statusEl.innerText = "НЕМАЄ ЗВ'ЯЗКУ (" + data.telemetry.print_state.toUpperCase() + ")";
+                    statusEl.className = "px-2 py-0.5 rounded text-[10px] font-bold bg-rose-950 text-rose-300";
+                }
+
+                // Відображаємо стандартизовані температури
+                const temps = data.telemetry.temps || { extruder: {current: 0, target: 0}, bed: {current: 0, target: 0} };
+                document.getElementById("temp-extruder").innerText = temps.extruder.current.toFixed(1) + "°C";
+                document.getElementById("target-extruder").innerText = "Ціль: " + temps.extruder.target.toFixed(0) + "°C";
+                document.getElementById("temp-bed").innerText = temps.bed.current.toFixed(1) + "°C";
+                document.getElementById("target-bed").innerText = "Ціль: " + temps.bed.target.toFixed(0) + "°C";
+
+                // Динамічний рендер решти сирих сенсорів
+                const container = document.getElementById("dynamic-sensors-container");
+                const rawTelemetry = data.telemetry.raw_telemetry || {};
+
+                if (Object.keys(rawTelemetry).length === 0) {
+                    container.innerHTML = '<p class="text-xs text-gray-500 text-center py-8">Немає додаткових активних датчиків.</p>';
+                    return;
+                }
+
+                container.innerHTML = "";
+                
+                for (const [sensorName, sensorValue] of Object.entries(rawTelemetry)) {
+                    // Пропускаємо великий словник "job", щоб не дублювати дані на екрані
+                    if (sensorName === "job") continue;
+
+                    const card = document.createElement("div");
+                    card.className = "bg-gray-900 p-2.5 rounded border border-gray-800";
+
+                    let html = `<p class="text-[11px] font-bold text-blue-400 border-b border-gray-800 pb-0.5 font-mono">${sensorName}</p>`;
+                    
+                    if (typeof sensorValue === "object" && sensorValue !== null) {
+                        html += `<div class="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-0.5 mt-1 text-[11px]">`;
+                        for (const [propName, propValue] of Object.entries(sensorValue)) {
+                            const displayValue = typeof propValue === "number" ? propValue.toFixed(1) : propValue;
+                            html += `
+                                <div class="flex justify-between py-0.5 border-b border-gray-950">
+                                    <span class="text-gray-500 font-mono text-[10px]">${propName}:</span>
+                                    <span class="font-bold text-gray-300 font-mono text-[10px]">${displayValue}</span>
+                                </div>
+                            `;
+                        }
+                        html += "</div>";
+                    } else {
+                        const displayValue = typeof sensorValue === "number" ? sensorValue.toFixed(1) : sensorValue;
+                        html += `
+                            <div class="flex justify-between text-[11px] mt-1">
+                                    <span class="text-gray-500 font-mono text-[10px]">value:</span>
+                                    <span class="font-bold text-gray-300 font-mono text-[10px]">${displayValue}</span>
+                                </div>
+                            `;
+                        }
+
+                        card.innerHTML = html;
+                        container.appendChild(card);
+                    }
+
+                } catch (e) {
+                    console.error("Помилка опитування статусу:", e);
+                }
+            }
+
+            async function saveManualIP(ipAddress = null) {
+                const ip = ipAddress || document.getElementById("manual-ip-input").value;
+                const type = document.getElementById("printer-type-select").value;
+                const apiKey = document.getElementById("manual-api-key").value;
+
+                if (!ip) return alert("Будь ласка, введіть коректну IP-адресу.");
+
+                try {
+                    const response = await secureFetch("/settings/printer-ip", {
+                        method: "POST",
+                        headers: {"Content-Type": "application/json"},
+                        body: JSON.stringify({
+                            ip: ip,
+                            type: type,
+                            api_key: apiKey
+                        })
+                    });
+                    const result = await response.json();
+                    if (result.status === "success") {
+                        alert("IP-адресу успішно збережено.");
+                        document.getElementById("manual-ip-input").value = "";
+                        document.getElementById("manual-api-key").value = "";
+                        
+                        // ПЕРЕМАЛЬОВУЄМО вкладки принтерів після збереження
+                        await loadPrinterTabs();
+                        loadSessions();
+                    }
+                } catch (e) {
+                    alert("Помилка збереження.");
+                }
+            }
+
+            async function startScan() {
+                const scanBtn = document.getElementById("scan-btn");
+                const resultsDiv = document.getElementById("scan-results");
+                const listDiv = document.getElementById("printers-list");
+
+                scanBtn.innerText = "⏳ Йде сканування мережі (2 сек)...";
+                scanBtn.disabled = true;
+
+                try {
+                    const response = await secureFetch("/settings/scan", { method: "POST" });
+                    const data = await response.json();
+                    
+                    listDiv.innerHTML = "";
+                    resultsDiv.classList.remove("hidden");
+
+                    if (data.status === "success" && data.printers.length > 0) {
+                        data.printers.forEach(printer => {
+                            const item = document.createElement("div");
+                            item.className = "flex items-center justify-between bg-gray-900 p-2 rounded text-xs";
+                            item.innerHTML = `
+                                <div>
+                                    <span class="font-bold text-gray-200 block">${printer.name}</span>
+                                    <span class="text-gray-500 font-mono">${printer.ip}:${printer.port}</span>
+                                </div>
+                                <button onclick="saveManualIP('${printer.ip}')" class="bg-emerald-600 hover:bg-emerald-500 px-3 py-1 rounded text-white font-bold transition">Підключити</button>
+                            `;
+                            listDiv.appendChild(item);
+                        });
+                    } else {
+                        listDiv.innerHTML = '<p class="text-xs text-gray-500 p-2">Пристроїв не знайдено.</p>';
+                    }
+                } catch (e) {
+                    alert("Помилка сканування.");
+                } finally {
+                    scanBtn.innerText = "🔍 Сканувати мережу";
+                    scanBtn.disabled = false;
+                }
+            }
+
+            checkAuthStatus();
+        </script>
+    </body>
+    </html>

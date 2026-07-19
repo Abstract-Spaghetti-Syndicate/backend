@@ -1,0 +1,7 @@
+
+
+git add .
+git commit -m "chore: фікс для вінди"
+git push origin main
+
+uvicorn main:app --reload      запуск сервака 
