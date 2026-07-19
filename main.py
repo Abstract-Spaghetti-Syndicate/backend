@@ -218,16 +218,39 @@ class PrinterDiscoveryListener(ServiceListener):
     def update_service(self, zc: Zeroconf, type_: str, name: str) -> None: pass
     def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None: pass
 
+def get_local_ip() -> str:
+    """Функція автоматично знаходить реальний IP комп'ютера у фізичній мережі (ігноруючи VPN/Tailscale)"""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # Маршрутизуємо тестовий запит. Реального з'єднання не створюється,
+        # але ОС повертає IP-адресу саме фізичного мережевого адаптера.
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+    except Exception:
+        ip = "127.0.0.1"
+    finally:
+        s.close()
+    return ip
+
 def scan_network_for_printers() -> list:
-    print("[mDNS SCAN LOG] Початок сканування мережі для Klipper та OctoPrint...", flush=True)
-    zc = Zeroconf()
+    print("[mDNS SCAN LOG] Запуск сканування локальної мережі...", flush=True)
+    try:
+        # Отримуємо реальний фізичний IP
+        local_ip = get_local_ip()
+        print(f"[mDNS SCAN LOG] Примусове прив'язування Zeroconf до домашнього інтерфейсу: {local_ip}", flush=True)
+        
+        # Передаємо цей IP у параметри interfaces. 
+        # Це змусить Zeroconf ігнорувати Tailscale/VPN та шукати принтер тільки в реальній Wi-Fi/LAN мережі!
+        zc = Zeroconf(interfaces=[local_ip])
+    except Exception as e:
+        print(f"[mDNS SCAN WARNING] Не вдалося прив'язати інтерфейс, використовуємо авторежим: {e}", flush=True)
+        zc = Zeroconf(ip_version=IPVersion.V4Only)
+        
     listener = PrinterDiscoveryListener()
-    # Запускаємо паралельно два сканери на обидві системи
     browser_klipper = ServiceBrowser(zc, "_moonraker._tcp.local.", listener)
     browser_octo = ServiceBrowser(zc, "_octoprint._tcp.local.", listener)
     time.sleep(2.0)
     zc.close()
-    print(f"[mDNS SCAN LOG] Сканування завершено. Знайдено пристроїв: {len(listener.printers)}", flush=True)
     return listener.printers
 
 
