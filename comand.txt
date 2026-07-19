@@ -1,7 +1,7 @@
 
 
 git add .
-git commit -m "chore: + зміна назви принтера і фікси3"
+git commit -m "chore: + фікси"
 git push origin main
 
 uvicorn main:app --reload      запуск сервака 

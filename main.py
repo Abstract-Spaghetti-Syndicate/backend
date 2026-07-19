@@ -99,6 +99,16 @@ def init_db():
             FOREIGN KEY(filament_id) REFERENCES filament(id)
         )
     """)
+
+    # Додаємо таблицю Locations (Локації зберігання)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS location (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            comment TEXT
+        )
+    """)
+    
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS printers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -677,7 +687,66 @@ async def import_from_spoolman(payload: SpoolmanImportRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/vendors", dependencies=[Depends(get_current_user)])
+def get_vendors():
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        # Повертаємо тільки не видалені бренди (deleted = 0)
+        cursor.execute("SELECT id, name, comment FROM vendor WHERE deleted=0")
+        rows = cursor.fetchall()
+        conn.close()
+        
+        vendors = [{"id": r[0], "name": r[1], "comment": r[2]} for r in rows]
+        return {"status": "success", "vendors": vendors}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/filaments", dependencies=[Depends(get_current_user)])
+def get_filaments():
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, name, material, vendor_id, diameter, density, 
+                   color_hex, spool_weight, settings_extruder_temp, settings_bed_temp 
+            FROM filament WHERE deleted=0
+        """)
+        rows = cursor.fetchall()
+        conn.close()
+        
+        filaments = []
+        for r in rows:
+            filaments.append({
+                "id": r[0],
+                "name": r[1],
+                "material": r[2],
+                "vendor_id": r[3],
+                "diameter": r[4] if r[4] is not None else 1.75,
+                "density": r[5],
+                "color_hex": r[6],
+                "spool_weight": r[7],
+                "ext_temp": r[8],
+                "bed_temp": r[9]
+            })
+        return {"status": "success", "filaments": filaments}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/locations", dependencies=[Depends(get_current_user)])
+def get_locations():
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name, comment FROM location")
+        rows = cursor.fetchall()
+        conn.close()
+        
+        locations = [{"id": r[0], "name": r[1], "comment": r[2]} for r in rows]
+        return {"status": "success", "locations": locations}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
 # --- ПУБЛІЧНИЙ mDNS Скан через TCP ---
 @app.post("/settings/scan", dependencies=[Depends(get_current_user)])
 async def scan_printers():
