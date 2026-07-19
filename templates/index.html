@@ -48,7 +48,7 @@
                 <div class="flex-shrink-0 mb-4">
                     <p class="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2">Оберіть активний принтер:</p>
                     <div id="printer-tabs-container" class="flex flex-wrap gap-1.5 items-center">
-                        <!-- Кнопки-вкладки та кнопка "+" будуть згенеровані через JS -->
+                        <!-- Кнопки-вкладки будуть згенеровані через JS -->
                     </div>
                 </div>
 
@@ -84,8 +84,8 @@
             <div class="space-y-6">
                 <!-- Спосіб 1: Зберегти IP у базу -->
                 <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700">
-                    <h2 id="form-title" class="text-lg font-bold text-white mb-2">Спосіб 1: Зберегти IP у базу (SQLite)</h2>
-                    <p class="text-xs text-gray-400 mb-4">Вкажіть назву та адресу вашого принтера у базі даних.</p>
+                    <h2 class="text-lg font-bold text-white mb-2">Спосіб 1: Зберегти IP у базу (SQLite)</h2>
+                    <p class="text-xs text-gray-400 mb-4">Оберіть систему вашого принтера та вкажіть його параметри.</p>
                     
                     <div class="space-y-3">
                         <!-- Поле введення назви принтера -->
@@ -152,6 +152,7 @@
         <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700 mt-6">
             <h2 class="text-xl font-bold mb-2 border-b border-gray-700 pb-2">Мої котушки філаменту</h2>
             <p class="text-xs text-gray-400 mb-4">Список активних та імпортованих котушок, збережених у локальній базі даних.</p>
+            
             <div id="spools-list-container" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 max-h-96 overflow-y-auto pr-1">
                 <p class="text-xs text-gray-500 py-6 text-center col-span-full">Очікування завантаження списку котушок...</p>
             </div>
@@ -162,8 +163,8 @@
     <script>
         let isSystemRegistered = false;
         let pollingInterval = null;
-        let activePrinterId = null;       // ID обраного для перегляду принтера
-        let registeredPrinters = [];      // Список усіх принтерів для мапування IP
+        let activePrinterId = null;       
+        let registeredPrinters = [];      
 
         async function checkAuthStatus() {
             try {
@@ -230,7 +231,6 @@
             document.getElementById("main-panel").classList.remove("hidden");
             
             if (!pollingInterval) {
-                // Спершу завантажуємо вкладки принтерів, а потім запускаємо інтервальне опитування
                 loadPrinterTabs().then(() => {
                     pollingInterval = setInterval(pollStatus, 1500);
                     pollStatus();
@@ -266,7 +266,7 @@
             return response;
         }
 
-        // Динамічне завантаження списку принтерів та малювання кнопок-вкладок (з кнопкою +)
+        // Завантаження кнопок-вкладок (без зеленої кнопки "+", але з повною підтримкою списку)
         async function loadPrinterTabs() {
             try {
                 const response = await secureFetch("/api/printers");
@@ -301,23 +301,6 @@
                     container.innerHTML = '<p class="text-xs text-gray-500 py-1 mr-2">Жодного принтера ще не додано.</p>';
                     activePrinterId = null;
                 }
-
-                // Додаємо зелену кнопку "＋" для створення нового принтера прямо біля вкладок!
-                const plusBtn = document.createElement("button");
-                plusBtn.className = "bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-extrabold px-2.5 py-1 rounded transition uppercase tracking-wider shadow-lg";
-                plusBtn.innerHTML = "＋ Додати";
-                plusBtn.onclick = () => {
-                    // Очищаємо форму для додавання нового принтера
-                    document.getElementById("manual-printer-name").value = "";
-                    document.getElementById("manual-ip-input").value = "";
-                    document.getElementById("manual-api-key").value = "";
-                    document.getElementById("printer-type-select").value = "klipper";
-                    togglePrinterTypeFields();
-                    
-                    document.getElementById("form-title").innerText = "Додати новий принтер у систему";
-                    alert("Заповніть форму праворуч для додавання НОВОГО принтера і натисніть 'Зберегти'!");
-                };
-                container.appendChild(plusBtn);
 
             } catch (e) {
                 console.error("Помилка завантаження вкладок принтерів:", e);
@@ -381,6 +364,7 @@
                         
                         const card = document.createElement("div");
                         card.className = "bg-gray-900 p-3.5 rounded border border-gray-800 flex flex-col justify-between";
+                        
                         const colorMarker = spool.color_hex ? `<span class="inline-block w-3 h-3 rounded-full border border-gray-700 mr-1.5 align-middle" style="background-color: #${spool.color_hex}"></span>` : "";
 
                         card.innerHTML = `
@@ -556,7 +540,6 @@
             }
         }
 
-        // Функція збереження принтера (підтримує створення унікальних за назвою або дефолтного)
         async function saveManualIP(ipFromScan = null, forcedType = null, forcedPort = null) {
             const type = forcedType || document.getElementById("printer-type-select").value;
             const apiKey = forcedType ? "" : document.getElementById("manual-api-key").value;
@@ -566,7 +549,7 @@
                 ip = ip + ":" + forcedPort;
             }
 
-            // Назва: беремо або вказану, або імітуємо автоматичну для сканованих
+            // Назва: створюємо або оновлюємо
             let name = document.getElementById("manual-printer-name").value.trim();
             if (!name) {
                 name = forcedType ? "Принтер " + forcedType.toUpperCase() + " #" + Date.now().toString().slice(-4) : "Default Printer";
@@ -587,13 +570,11 @@
                 });
                 const result = await response.json();
                 if (result.status === "success") {
-                    alert("Принтер '" + result.name + "' успішно збережено у базу SQLite!");
+                    alert("Принтер '" + result.name + "' успішно збережено.");
                     document.getElementById("manual-ip-input").value = "";
                     document.getElementById("manual-api-key").value = "";
                     document.getElementById("manual-printer-name").value = "";
                     
-                    document.getElementById("form-title").innerText = "Спосіб 1: Зберегти IP у базу (SQLite)";
-
                     await loadPrinterTabs();
                     loadSessions();
                 }
@@ -611,6 +592,7 @@
             scanBtn.disabled = true;
 
             try {
+                // Виправляємо запит: тепер він робить POST /settings/scan без 404 помилок
                 const response = await secureFetch("/settings/scan", { method: "POST" });
                 const data = await response.json();
                 
