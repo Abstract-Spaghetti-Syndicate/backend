@@ -149,16 +149,28 @@
             </div>
         </div>
 
-        <!-- Список котушок -->
+        <!-- Склад інвентарю (Вкладки) -->
         <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700 mt-6">
-            <h2 class="text-xl font-bold mb-2 border-b border-gray-700 pb-2">Мої котушки філаменту</h2>
-            <p class="text-xs text-gray-400 mb-4">Список активних та імпортованих котушок, збережених у локальній базі даних.</p>
-            <div id="spools-list-container" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 max-h-96 overflow-y-auto pr-1">
+            <h2 class="text-xl font-bold mb-2 border-b border-gray-700 pb-2">Склад (Spoolman)</h2>
+            <p class="text-xs text-gray-400 mb-4">Управління котушками, пластиком, виробниками та локаціями.</p>
+            
+            <!-- Навігація вкладок -->
+            <div class="flex flex-wrap gap-2 mb-4 border-b border-gray-700 pb-4">
+                <button id="tab-btn-spools" onclick="switchInventoryTab('spools')" class="bg-blue-600 text-white px-4 py-1.5 rounded text-xs font-bold transition">Котушки</button>
+                <button id="tab-btn-filaments" onclick="switchInventoryTab('filaments')" class="bg-gray-900 text-gray-400 hover:text-gray-200 px-4 py-1.5 rounded text-xs font-bold transition border border-gray-800">Філамент</button>
+                <button id="tab-btn-vendors" onclick="switchInventoryTab('vendors')" class="bg-gray-900 text-gray-400 hover:text-gray-200 px-4 py-1.5 rounded text-xs font-bold transition border border-gray-800">Виробники</button>
+                <button id="tab-btn-locations" onclick="switchInventoryTab('locations')" class="bg-gray-900 text-gray-400 hover:text-gray-200 px-4 py-1.5 rounded text-xs font-bold transition border border-gray-800">Місця</button>
+            </div>
+
+            <!-- Контейнери для кожної вкладки -->
+            <div id="inventory-spools" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 max-h-96 overflow-y-auto pr-1">
                 <p class="text-xs text-gray-500 py-6 text-center col-span-full">Очікування завантаження списку котушок...</p>
             </div>
+            
+            <div id="inventory-filaments" class="hidden grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 max-h-96 overflow-y-auto pr-1"></div>
+            <div id="inventory-vendors" class="hidden grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 max-h-96 overflow-y-auto pr-1"></div>
+            <div id="inventory-locations" class="hidden grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 max-h-96 overflow-y-auto pr-1"></div>
         </div>
-
-    </div>
 
     <script>
         let isSystemRegistered = false;
@@ -236,7 +248,7 @@
                     pollStatus();
                 });
                 loadSessions();
-                loadSpools();
+                switchInventoryTab('spools'); // <- ЗМІНЕНО ТУТ
             }
         }
 
@@ -442,6 +454,173 @@
             }
         }
 
+// Логіка перемикання вкладок
+        function switchInventoryTab(tabName) {
+            const tabs = ['spools', 'filaments', 'vendors', 'locations'];
+
+            tabs.forEach(tab => {
+                const btn = document.getElementById(`tab-btn-${tab}`);
+                const container = document.getElementById(`inventory-${tab}`);
+                
+                if (tab === tabName) {
+                    btn.className = "bg-blue-600 text-white px-4 py-1.5 rounded text-xs font-bold transition";
+                    container.classList.remove('hidden');
+                } else {
+                    btn.className = "bg-gray-900 text-gray-400 hover:text-gray-200 px-4 py-1.5 rounded text-xs font-bold transition border border-gray-800";
+                    container.classList.add('hidden');
+                }
+            });
+
+            // Завантажуємо дані для вибраної вкладки
+            if (tabName === 'spools') loadSpools();
+            else if (tabName === 'filaments') loadFilaments();
+            else if (tabName === 'vendors') loadVendors();
+            else if (tabName === 'locations') loadLocations();
+        }
+
+        // Оновлена функція завантаження котушок (замінює стару id контейнера)
+        async function loadSpools() {
+            try {
+                const response = await secureFetch("/api/spools");
+                const data = await response.json();
+                const container = document.getElementById("inventory-spools"); // <- ТУТ ЗМІНЕНО ID
+                container.innerHTML = "";
+
+                if (data.status === "success" && data.spools.length > 0) {
+                    data.spools.forEach(spool => {
+                        const remaining = spool.initial_weight - spool.used_weight;
+                        const percentage = Math.max(0, Math.min(100, (remaining / spool.initial_weight) * 100));
+                        
+                        const card = document.createElement("div");
+                        card.className = "bg-gray-900 p-3.5 rounded border border-gray-800 flex flex-col justify-between";
+                        const colorMarker = spool.color_hex ? `<span class="inline-block w-3 h-3 rounded-full border border-gray-700 mr-1.5 align-middle" style="background-color: #${spool.color_hex}"></span>` : "";
+
+                        card.innerHTML = `
+                            <div>
+                                <div class="flex justify-between items-start mb-1">
+                                    <span class="text-gray-500 font-mono text-[10px] font-bold uppercase tracking-wider">${spool.vendor || "Невідомо"}</span>
+                                    <span class="bg-blue-950/60 text-blue-300 text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase">${spool.material || "?"}</span>
+                                </div>
+                                <h3 class="text-xs font-bold text-gray-200 flex items-center mb-3">
+                                    ${colorMarker}
+                                    ${spool.name || "Філамент #" + spool.id}
+                                </h3>
+                            </div>
+                            <div class="space-y-1">
+                                <div class="flex justify-between text-[11px]">
+                                    <span class="text-gray-400">Залишилося:</span>
+                                    <span class="font-mono font-bold text-emerald-400">${remaining.toFixed(0)}г / ${spool.initial_weight.toFixed(0)}г</span>
+                                </div>
+                                <div class="w-full bg-gray-800 rounded-full h-1.5 overflow-hidden">
+                                    <div class="bg-emerald-500 h-1.5 rounded-full transition-all duration-500" style="width: ${percentage}%"></div>
+                                </div>
+                            </div>
+                        `;
+                        container.appendChild(card);
+                    });
+                } else {
+                    container.innerHTML = '<p class="text-xs text-gray-500 py-6 text-center col-span-full">У вашій базі немає жодної активної котушки. Виконайте імпорт або додайте котушки.</p>';
+                }
+            } catch (e) {
+                console.error("Помилка завантаження котушок:", e);
+            }
+        }
+
+        // --- НОВІ ФУНКЦІЇ ДЛЯ ІНШИХ ВКЛАДОК ---
+
+        async function loadFilaments() {
+            try {
+                const response = await secureFetch("/api/filaments");
+                const data = await response.json();
+                const container = document.getElementById("inventory-filaments");
+                container.innerHTML = "";
+
+                if (data.status === "success" && data.filaments.length > 0) {
+                    data.filaments.forEach(fil => {
+                        const card = document.createElement("div");
+                        card.className = "bg-gray-900 p-3.5 rounded border border-gray-800 flex flex-col";
+                        const colorMarker = fil.color_hex ? `<span class="inline-block w-3 h-3 rounded-full border border-gray-700 mr-1.5 align-middle" style="background-color: #${fil.color_hex}"></span>` : "";
+
+                        card.innerHTML = `
+                            <div class="flex justify-between items-start mb-1">
+                                <span class="text-gray-500 font-mono text-[10px] font-bold uppercase">ID: ${fil.id}</span>
+                                <span class="bg-purple-950/60 text-purple-300 text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase">${fil.material || "?"}</span>
+                            </div>
+                            <h3 class="text-xs font-bold text-gray-200 flex items-center mb-3">
+                                ${colorMarker} ${fil.name || "Без назви"}
+                            </h3>
+                            <div class="text-[10px] text-gray-400 space-y-1">
+                                <p class="flex justify-between border-b border-gray-800 pb-1"><span>Діаметр:</span> <span class="text-gray-200">${fil.diameter || 1.75} мм</span></p>
+                                <p class="flex justify-between border-b border-gray-800 pb-1 pt-1"><span>Щільність:</span> <span class="text-gray-200">${fil.density || 0} г/см³</span></p>
+                                <p class="flex justify-between pt-1"><span>Темп. (сопло/стіл):</span> <span class="text-gray-200 font-mono">${fil.ext_temp || '-'}° / ${fil.bed_temp || '-'}°</span></p>
+                            </div>
+                        `;
+                        container.appendChild(card);
+                    });
+                } else {
+                    container.innerHTML = '<p class="text-xs text-gray-500 py-6 text-center col-span-full">Немає збереженого філаменту. Виконайте імпорт.</p>';
+                }
+            } catch (e) {
+                console.error("Помилка завантаження філаментів:", e);
+            }
+        }
+
+        async function loadVendors() {
+            try {
+                const response = await secureFetch("/api/vendors");
+                const data = await response.json();
+                const container = document.getElementById("inventory-vendors");
+                container.innerHTML = "";
+
+                if (data.status === "success" && data.vendors.length > 0) {
+                    data.vendors.forEach(ven => {
+                        const card = document.createElement("div");
+                        card.className = "bg-gray-900 p-3.5 rounded border border-gray-800 flex items-center gap-3";
+                        card.innerHTML = `
+                            <div class="bg-gray-800 p-2 rounded text-xl">🏭</div>
+                            <div>
+                                <h3 class="text-sm font-bold text-gray-200 leading-tight">${ven.name}</h3>
+                                ${ven.comment ? `<p class="text-[10px] text-gray-400 mt-0.5">${ven.comment}</p>` : `<p class="text-[10px] text-gray-600 italic mt-0.5">Без опису</p>`}
+                            </div>
+                        `;
+                        container.appendChild(card);
+                    });
+                } else {
+                    container.innerHTML = '<p class="text-xs text-gray-500 py-6 text-center col-span-full">Немає збережених виробників. Виконайте імпорт.</p>';
+                }
+            } catch (e) {
+                console.error("Помилка завантаження виробників:", e);
+            }
+        }
+
+        async function loadLocations() {
+            try {
+                const response = await secureFetch("/api/locations");
+                const data = await response.json();
+                const container = document.getElementById("inventory-locations");
+                container.innerHTML = "";
+
+                if (data.status === "success" && data.locations.length > 0) {
+                    data.locations.forEach(loc => {
+                        const card = document.createElement("div");
+                        card.className = "bg-gray-900 p-3.5 rounded border border-gray-800 flex items-center gap-3";
+                        card.innerHTML = `
+                            <div class="bg-gray-800 p-2 rounded text-xl">📍</div>
+                            <div>
+                                <h3 class="text-sm font-bold text-gray-200 leading-tight">${loc.name}</h3>
+                                ${loc.comment ? `<p class="text-[10px] text-gray-400 mt-0.5">${loc.comment}</p>` : `<p class="text-[10px] text-gray-600 italic mt-0.5">Без опису</p>`}
+                            </div>
+                        `;
+                        container.appendChild(card);
+                    });
+                } else {
+                    container.innerHTML = '<p class="text-xs text-gray-500 py-6 text-center col-span-full">У базі немає збережених місць (локацій).</p>';
+                }
+            } catch (e) {
+                console.error("Помилка завантаження локацій:", e);
+            }
+        }
+
         async function importFromSpoolman(btn) {
             const url = document.getElementById("spoolman-url-input").value;
             if (!url) return alert("Будь ласка, введіть URL вашого сервера Spoolman.");
@@ -467,9 +646,8 @@
 
                 const result = await response.json();
                 if (result.status === "success") {
-                    alert("Успішно імпортовано:\\n- Виробників: " + result.imported.vendors + "\\n- Пластику: " + result.imported.filaments + "\\n- Котушок: " + result.imported.spools);
-                    document.getElementById("spoolman-url-input").value = "";
-                    loadSpools();
+                    alert(`Успішно імпортовано:\n- Виробників: ${result.imported.vendors}\n- Пластику: ${result.imported.filaments}\n- Котушок: ${result.imported.spools}\n- Місць: ${result.imported.locations || 0}`);
+                    switchInventoryTab('spools');
                 } else {
                     alert("Помилка імпорту.");
                 }

@@ -638,60 +638,94 @@ async def import_from_spoolman(payload: SpoolmanImportRequest):
             v_resp = await client.get(f"{base_url}/vendor")
             if v_resp.status_code != 200: raise HTTPException(status_code=400)
             vendors = v_resp.json()
+            if not isinstance(vendors, list): vendors = []
             
             f_resp = await client.get(f"{base_url}/filament")
             if f_resp.status_code != 200: raise HTTPException(status_code=400)
             filaments = f_resp.json()
+            if not isinstance(filaments, list): filaments = []
             
             s_resp = await client.get(f"{base_url}/spool")
             if s_resp.status_code != 200: raise HTTPException(status_code=400)
             spools = s_resp.json()
+            if not isinstance(spools, list): spools = []
 
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         cursor.execute("PRAGMA foreign_keys = OFF")
 
-        for v in vendors:
-            cursor.execute("INSERT OR REPLACE INTO vendor (id, name, comment, deleted) VALUES (?, ?, ?, ?)", 
-                           (v.get("id"), v.get("name"), v.get("comment"), 1 if v.get("deleted") else 0))
-            
-        for f in filaments:
-            vendor_id = f.get("vendor", {}).get("id") if f.get("vendor") else None
-            cursor.execute("""
-                INSERT OR REPLACE INTO filament (
-                    id, name, vendor_id, material, price, density, diameter, 
-                    weight, spool_weight, color_hex, comment, 
-                    settings_extruder_temp, settings_bed_temp, deleted
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                f.get("id"), f.get("name"), vendor_id, f.get("material"),
-                f.get("price"), f.get("density"), f.get("diameter"),
-                f.get("weight"), f.get("spool_weight"), f.get("color_hex"),
-                f.get("comment"), f.get("settings_extruder_temp"),
-                f.get("settings_bed_temp"), 1 if f.get("deleted") else 0
-            ))
-
+        # --- НОВЕ: Динамічне збереження локацій з котушок ---
+        # Spoolman зберігає місце просто як текст у котушці. Ми збираємо унікальні назви!
+        unique_locations = set()
         for s in spools:
-            filament_id = s.get("filament", {}).get("id") if s.get("filament") else None
-            extra_val = json.dumps(s.get("extra")) if s.get("extra") else None
-            cursor.execute("""
-                INSERT OR REPLACE INTO spool (
-                    id, filament_id, registered, first_used, last_used, 
-                    initial_weight, spool_weight, used_weight, comment, archived, price, extra
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                s.get("id"), filament_id, s.get("registered"), s.get("first_used"),
-                s.get("last_used"), s.get("initial_weight"), s.get("spool_weight"),
-                s.get("used_weight", 0.0), s.get("comment"), 1 if s.get("archived") else 0,
-                s.get("price"), extra_val
-            ))
+            if isinstance(s, dict) and s.get("location"):
+                unique_locations.add(str(s.get("location")).strip())
+        
+        cursor.execute("DELETE FROM location") # Очищуємо старі локації перед імпортом
+        for i, loc_name in enumerate(unique_locations, start=1):
+            cursor.execute("INSERT INTO location (id, name, comment) VALUES (?, ?, ?)", 
+                           (i, loc_name, "Імпортовано зі Spoolman"))
+
+        # Зберігаємо виробників
+        for v in vendors:
+            if isinstance(v, dict):
+                cursor.execute("INSERT OR REPLACE INTO vendor (id, name, comment, deleted) VALUES (?, ?, ?, ?)", 
+                               (v.get("id"), v.get("name"), v.get("comment"), 1 if v.get("deleted") else 0))
+            
+        # Зберігаємо філамент
+        for f in filaments:
+            if isinstance(f, dict):
+                vendor_data = f.get("vendor")
+                vendor_id = vendor_data.get("id") if isinstance(vendor_data, dict) else None
+                
+                cursor.execute("""
+                    INSERT OR REPLACE INTO filament (
+                        id, name, vendor_id, material, price, density, diameter, 
+                        weight, spool_weight, color_hex, comment, 
+                        settings_extruder_temp, settings_bed_temp, deleted
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    f.get("id"), f.get("name"), vendor_id, f.get("material"),
+                    f.get("price"), f.get("density"), f.get("diameter"),
+                    f.get("weight"), f.get("spool_weight"), f.get("color_hex"),
+                    f.get("comment"), f.get("settings_extruder_temp"),
+                    f.get("settings_bed_temp"), 1 if f.get("deleted") else 0
+                ))
+
+        # Зберігаємо котушки
+        for s in spools:
+            if isinstance(s, dict):
+                filament_data = s.get("filament")
+                filament_id = filament_data.get("id") if isinstance(filament_data, dict) else None
+                extra_val = json.dumps(s.get("extra")) if s.get("extra") else None
+                
+                cursor.execute("""
+                    INSERT OR REPLACE INTO spool (
+                        id, filament_id, registered, first_used, last_used, 
+                        initial_weight, spool_weight, used_weight, comment, archived, price, extra
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    s.get("id"), filament_id, s.get("registered"), s.get("first_used"),
+                    s.get("last_used"), s.get("initial_weight"), s.get("spool_weight"),
+                    s.get("used_weight", 0.0), s.get("comment"), 1 if s.get("archived") else 0,
+                    s.get("price"), extra_val
+                ))
 
         cursor.execute("PRAGMA foreign_keys = ON")
         conn.commit()
         conn.close()
-        return {"status": "success", "imported": {"vendors": len(vendors), "filaments": len(filaments), "spools": len(spools)}}
+        
+        return {
+            "status": "success", 
+            "imported": {
+                "vendors": len(vendors), 
+                "filaments": len(filaments), 
+                "spools": len(spools),
+                "locations": len(unique_locations)
+            }
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
