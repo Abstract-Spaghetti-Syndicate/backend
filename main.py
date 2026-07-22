@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from printer_manager import PrinterManager
 from core.database import init_db
@@ -26,6 +27,9 @@ async def lifespan(app: FastAPI):
 
 # 3. Створюємо екземпляр FastAPI
 app = FastAPI(title="Secure Printer Gateway", lifespan=lifespan)
+
+# --- ДОДАЄМО ПАПКУ ЗІ СТАТИКОЮ ---
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # 4. Налаштовуємо CORS (дозволяємо запити з будь-яких джерел)
 app.add_middleware(

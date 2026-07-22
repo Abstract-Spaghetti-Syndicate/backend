@@ -3,7 +3,11 @@ import json
 import httpx
 from fastapi import APIRouter, HTTPException, Depends
 from core.database import DB_FILE
-from core.models import SpoolmanImportRequest
+from core.models import (
+    SpoolmanImportRequest, 
+    VendorCreateUpdate, LocationCreateUpdate, 
+    FilamentCreateUpdate, SpoolCreateUpdate
+)
 from core.security import get_current_user
 
 router = APIRouter(prefix="/api", tags=["Inventory"])
@@ -117,3 +121,112 @@ def get_locations():
     rows = cursor.fetchall()
     conn.close()
     return {"status": "success", "locations": [{"id": r[0], "name": r[1], "comment": r[2]} for r in rows]}
+
+
+# ==========================================
+# CRUD ДЛЯ ВИРОБНИКІВ (VENDORS)
+# ==========================================
+@router.post("/vendors", dependencies=[Depends(get_current_user)])
+def create_vendor(payload: VendorCreateUpdate):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO vendor (name, comment) VALUES (?, ?)", (payload.name, payload.comment))
+    conn.commit()
+    new_id = cursor.lastrowid
+    conn.close()
+    return {"status": "success", "id": new_id}
+
+@router.put("/vendors/{item_id}", dependencies=[Depends(get_current_user)])
+def update_vendor(item_id: int, payload: VendorCreateUpdate):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE vendor SET name=?, comment=?, deleted=? WHERE id=?", 
+                   (payload.name, payload.comment, payload.deleted, item_id))
+    conn.commit()
+    conn.close()
+    return {"status": "success"}
+
+# ==========================================
+# CRUD ДЛЯ ЛОКАЦІЙ (LOCATIONS)
+# ==========================================
+@router.post("/locations", dependencies=[Depends(get_current_user)])
+def create_location(payload: LocationCreateUpdate):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO location (name, comment) VALUES (?, ?)", (payload.name, payload.comment))
+    conn.commit()
+    new_id = cursor.lastrowid
+    conn.close()
+    return {"status": "success", "id": new_id}
+
+@router.put("/locations/{item_id}", dependencies=[Depends(get_current_user)])
+def update_location(item_id: int, payload: LocationCreateUpdate):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE location SET name=?, comment=? WHERE id=?", 
+                   (payload.name, payload.comment, item_id))
+    conn.commit()
+    conn.close()
+    return {"status": "success"}
+
+# ==========================================
+# CRUD ДЛЯ ФІЛАМЕНТУ (FILAMENTS)
+# ==========================================
+@router.post("/filaments", dependencies=[Depends(get_current_user)])
+def create_filament(payload: FilamentCreateUpdate):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO filament (name, vendor_id, material, price, density, diameter, 
+        weight, spool_weight, color_hex, comment, settings_extruder_temp, settings_bed_temp)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (payload.name, payload.vendor_id, payload.material, payload.price, payload.density, 
+          payload.diameter, payload.weight, payload.spool_weight, payload.color_hex, 
+          payload.comment, payload.settings_extruder_temp, payload.settings_bed_temp))
+    conn.commit()
+    new_id = cursor.lastrowid
+    conn.close()
+    return {"status": "success", "id": new_id}
+
+@router.put("/filaments/{item_id}", dependencies=[Depends(get_current_user)])
+def update_filament(item_id: int, payload: FilamentCreateUpdate):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE filament SET name=?, vendor_id=?, material=?, price=?, density=?, diameter=?, 
+        weight=?, spool_weight=?, color_hex=?, comment=?, settings_extruder_temp=?, settings_bed_temp=?, deleted=?
+        WHERE id=?
+    """, (payload.name, payload.vendor_id, payload.material, payload.price, payload.density, 
+          payload.diameter, payload.weight, payload.spool_weight, payload.color_hex, 
+          payload.comment, payload.settings_extruder_temp, payload.settings_bed_temp, payload.deleted, item_id))
+    conn.commit()
+    conn.close()
+    return {"status": "success"}
+
+# ==========================================
+# CRUD ДЛЯ КОТУШОК (SPOOLS)
+# ==========================================
+@router.post("/spools", dependencies=[Depends(get_current_user)])
+def create_spool(payload: SpoolCreateUpdate):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO spool (filament_id, initial_weight, spool_weight, used_weight, price, comment)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (payload.filament_id, payload.initial_weight, payload.spool_weight, payload.used_weight, payload.price, payload.comment))
+    conn.commit()
+    new_id = cursor.lastrowid
+    conn.close()
+    return {"status": "success", "id": new_id}
+
+@router.put("/spools/{item_id}", dependencies=[Depends(get_current_user)])
+def update_spool(item_id: int, payload: SpoolCreateUpdate):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE spool SET filament_id=?, initial_weight=?, spool_weight=?, used_weight=?, price=?, comment=?, archived=?
+        WHERE id=?
+    """, (payload.filament_id, payload.initial_weight, payload.spool_weight, payload.used_weight, payload.price, payload.comment, payload.archived, item_id))
+    conn.commit()
+    conn.close()
+    return {"status": "success"}
