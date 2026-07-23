@@ -13,24 +13,31 @@ from core.security import get_current_user
 router = APIRouter(prefix="/api", tags=["Inventory"])
 
 @router.get("/spools", dependencies=[Depends(get_current_user)])
+@router.get("/spools", dependencies=[Depends(get_current_user)])
 def get_spools_list():
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
-        # ВИПРАВЛЕНО: Використовуємо LEFT JOIN, щоб показувати котушки навіть без виробника!
         cursor.execute("""
             SELECT spool.id, vendor.name, filament.name, filament.material, 
                    COALESCE(spool.initial_weight, filament.weight, 1000.0) AS initial, 
-                   spool.used_weight, filament.color_hex
+                   spool.used_weight, filament.color_hex,
+                   spool.spool_weight, spool.price, spool.comment, spool.filament_id
             FROM spool
-            LEFT JOIN filament ON spool.filament_id = filament.id
-            LEFT JOIN vendor ON filament.vendor_id = vendor.id
+            JOIN filament ON spool.filament_id = filament.id
+            JOIN vendor ON filament.vendor_id = vendor.id
             WHERE spool.archived = 0 ORDER BY spool.id DESC
         """)
         rows = cursor.fetchall()
         conn.close()
         
-        spools = [{"id": r[0], "vendor": r[1], "name": r[2], "material": r[3], "initial_weight": r[4], "used_weight": r[5], "color_hex": r[6]} for r in rows]
+        spools = []
+        for r in rows:
+            spools.append({
+                "id": r[0], "vendor": r[1], "name": r[2], "material": r[3], 
+                "initial_weight": r[4], "used_weight": r[5], "color_hex": r[6],
+                "spool_weight": r[7], "price": r[8], "comment": r[9], "filament_id": r[10]
+            })
         return {"status": "success", "spools": spools}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Помилка зчитування бази: {str(e)}")
