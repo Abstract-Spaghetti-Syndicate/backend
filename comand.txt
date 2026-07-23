@@ -1,7 +1,7 @@
 
 
 git add .
-git commit -m "chore: розкидав функції по папкам"
+git commit -m "chore: фікс повідомлення про імпорт"
 git push origin main
 
 uvicorn main:app --reload      запуск сервака 

@@ -1,0 +1,2504 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+core/
+  __init__.py
+  database.py
+  models.py
+  network_scanner.py
+  security.py
+routers/
+  __init__.py
+  auth.py
+  frontend.py
+  inventory.py
+  printers.py
+static/
+  js/
+    auth.js
+    crud.js
+    inventory.js
+    printers.js
+    state.js
+  coment.txt
+templates/
+  index.html
+.gitignore
+base_client.py
+comand.txt
+docker-compose.yml
+Dockerfile
+klipper_client.py
+main.py
+octoprint_client.py
+printer_manager.py
+reprap_client.py
+requirements.txt
+run.sh
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="core/__init__.py">
+
+</file>
+
+<file path="core/database.py">
+import sqlite3
+import os
+
+# Отримуємо корінь проєкту (на рівень вище папки core)
+CORE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(CORE_DIR)
+DB_DIR = os.path.join(BASE_DIR, "data")
+DB_FILE = os.path.join(DB_DIR, "settings.db")
+
+def init_db():
+    os.makedirs(DB_DIR, exist_ok=True)
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA foreign_keys = ON")
+    
+    cursor.execute("""CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)""")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE, password_hash TEXT)""")
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sessions (
+            token TEXT PRIMARY KEY, user_id INTEGER, ip_address TEXT, 
+            user_agent TEXT, created_at REAL, expires_at REAL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+    """)
+    
+    cursor.execute("""CREATE TABLE IF NOT EXISTS vendor (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, comment TEXT, deleted INTEGER DEFAULT 0)""")
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS filament (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, vendor_id INTEGER, 
+            material TEXT, price REAL, density REAL NOT NULL, diameter REAL NOT NULL, 
+            weight REAL, spool_weight REAL, color_hex TEXT, comment TEXT, 
+            settings_extruder_temp INTEGER, settings_bed_temp INTEGER, deleted INTEGER DEFAULT 0,
+            FOREIGN KEY(vendor_id) REFERENCES vendor(id)
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS spool (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, filament_id INTEGER, registered TEXT, 
+            first_used TEXT, last_used TEXT, initial_weight REAL, spool_weight REAL, 
+            used_weight REAL NOT NULL DEFAULT 0.0, comment TEXT, archived INTEGER DEFAULT 0, 
+            price REAL, extra TEXT, FOREIGN KEY(filament_id) REFERENCES filament(id)
+        )
+    """)
+    cursor.execute("""CREATE TABLE IF NOT EXISTS location (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, comment TEXT)""")
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS printers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, type TEXT NOT NULL, 
+            host TEXT NOT NULL, port INTEGER NOT NULL, api_key TEXT
+        )
+    """)
+    
+    try:
+        cursor.execute("ALTER TABLE sessions ADD COLUMN ip_address TEXT")
+        cursor.execute("ALTER TABLE sessions ADD COLUMN user_agent TEXT")
+        cursor.execute("ALTER TABLE sessions ADD COLUMN created_at REAL")
+    except sqlite3.OperationalError:
+        pass
+        
+    conn.commit()
+    conn.close()
+    print("[SQLITE LOG] Базу даних успішно ініціалізовано.", flush=True)
+
+def save_ip_to_db(ip: str):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('printer_ip', ?)", (ip,))
+    conn.commit()
+    conn.close()
+</file>
+
+<file path="core/network_scanner.py">
+import socket
+import asyncio
+
+def get_local_ip() -> str:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+    except Exception:
+        ip = "127.0.0.1"
+    finally:
+        s.close()
+    return ip
+
+def get_subnet_ips(local_ip: str) -> list:
+    if not local_ip or local_ip == "127.0.0.1":
+        return []
+    parts = local_ip.split(".")
+    if len(parts) != 4:
+        return []
+    prefix = f"{parts[0]}.{parts[1]}.{parts[2]}."
+    return [f"{prefix}{i}" for i in range(1, 255) if f"{prefix}{i}" != local_ip]
+
+async def try_tcp_connect(ip: str, port: int, timeout: float = 0.3) -> bool:
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(ip, port),
+            timeout=timeout
+        )
+        writer.close()
+        await writer.wait_closed()
+        return True
+    except Exception:
+        return False
+
+async def scan_network_for_printers_tcp() -> list:
+    local_ip = get_local_ip()
+    ips = get_subnet_ips(local_ip)
+    if not ips:
+        print("[TCP SCAN] Не вдалося знайти локальний інтерфейс для сканування.", flush=True)
+        return []
+        
+    print(f"[TCP SCAN] Початок сканування підмережі {local_ip} для портів 7125 та 5000...", flush=True)
+    
+    tasks_klipper = [try_tcp_connect(ip, 7125) for ip in ips]
+    tasks_octo = [try_tcp_connect(ip, 5000) for ip in ips]
+    
+    results_klipper = await asyncio.gather(*tasks_klipper)
+    results_octo = await asyncio.gather(*tasks_octo)
+    
+    found_printers = []
+    for i, ip in enumerate(ips):
+        if results_klipper[i]:
+            found_printers.append({
+                "name": f"Klipper ({ip})",
+                "type": "klipper",
+                "ip": ip,
+                "port": 7125
+            })
+        if results_octo[i]:
+            found_printers.append({
+                "name": f"OctoPrint ({ip})",
+                "type": "octoprint",
+                "ip": ip,
+                "port": 5000
+            })
+            
+    print(f"[TCP SCAN] Сканування завершено. Знайдено: {len(found_printers)} пристроїв.", flush=True)
+    return found_printers
+</file>
+
+<file path="core/security.py">
+import os
+import time
+import hashlib
+import sqlite3
+from fastapi import HTTPException, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from core.database import DB_FILE
+
+def parse_user_agent(ua_string: str) -> str:
+    if not ua_string: return "Невідомий пристрій"
+    ua_string = ua_string.lower()
+    os_name = "Unknown OS"
+    if "windows" in ua_string: os_name = "Windows"
+    elif "android" in ua_string: os_name = "Android"
+    elif "iphone" in ua_string or "ipad" in ua_string: os_name = "iOS"
+    elif "macintosh" in ua_string or "mac os" in ua_string: os_name = "macOS"
+    elif "linux" in ua_string: os_name = "Linux"
+    
+    browser_name = "Unknown Browser"
+    if "vivaldi" in ua_string: browser_name = "Vivaldi"
+    elif "yabrowser" in ua_string: browser_name = "Yandex Browser"
+    elif "opr" in ua_string or "opera" in ua_string: browser_name = "Opera"
+    elif "edg" in ua_string or "edge" in ua_string: browser_name = "Edge"
+    elif "brave" in ua_string: browser_name = "Brave"
+    elif "firefox" in ua_string: browser_name = "Firefox"
+    elif "chrome" in ua_string: browser_name = "Chrome"
+    elif "safari" in ua_string: browser_name = "Safari"
+    return f"{browser_name} ({os_name})"
+
+def hash_password(password: str) -> str:
+    salt = os.urandom(16)
+    pwdhash = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 100000)
+    return salt.hex() + ":" + pwdhash.hex()
+
+def verify_password(stored_password: str, provided_password: str) -> bool:
+    try:
+        salt_hex, hash_hex = stored_password.split(":")
+        salt = bytes.fromhex(salt_hex)
+        pwdhash = hashlib.pbkdf2_hmac("sha256", provided_password.encode("utf-8"), salt, 100000)
+        return pwdhash.hex() == hash_hex
+    except Exception: return False
+
+def create_session(user_id: int, ip_address: str, user_agent: str) -> str:
+    token = os.urandom(24).hex()
+    created_at = time.time()
+    expires_at = created_at + (30 * 24 * 3600)
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO sessions (token, user_id, ip_address, user_agent, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (token, user_id, ip_address, user_agent, created_at, expires_at)
+    )
+    conn.commit()
+    conn.close()
+    return token
+
+def verify_session_token(token: str) -> int:
+    if not token: raise HTTPException(status_code=401, detail="Токен відсутній")
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, expires_at FROM sessions WHERE token=?", (token,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row: raise HTTPException(status_code=401, detail="Невірний токен")
+    user_id, expires_at = row
+    if time.time() > expires_at: raise HTTPException(status_code=401, detail="Сесія застаріла")
+    return user_id
+
+security_scheme = HTTPBearer()
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security_scheme)):
+    return verify_session_token(credentials.credentials)
+</file>
+
+<file path="routers/__init__.py">
+
+</file>
+
+<file path="routers/auth.py">
+import sqlite3
+from datetime import datetime
+from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi.security import HTTPAuthorizationCredentials
+
+from core.database import DB_FILE
+from core.models import RegisterRequest, LoginRequest, RevokeRequest
+from core.security import (
+    hash_password, verify_password, create_session, 
+    verify_session_token, parse_user_agent, get_current_user, security_scheme
+)
+
+router = APIRouter(prefix="/api/auth", tags=["Auth"])
+
+@router.get("/status")
+def get_auth_status():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM users")
+    count = cursor.fetchone()[0]
+    conn.close()
+    return {"is_registered": count > 0}
+
+@router.post("/register")
+def register_user(payload: RegisterRequest, request: Request):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM users")
+    if cursor.fetchone()[0] > 0:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Реєстрація закрита.")
+    
+    hashed = hash_password(payload.password)
+    try:
+        cursor.execute("INSERT INTO users (email, password_hash) VALUES (?, ?)", (payload.email, hashed))
+        conn.commit()
+        user_id = cursor.lastrowid
+    except Exception as e:
+        conn.close()
+        raise HTTPException(status_code=500, detail=f"Помилка створення: {e}")
+    conn.close()
+    
+    ip = request.client.host if request.client else "unknown"
+    ua = request.headers.get("user-agent", "unknown")
+    token = create_session(user_id, ip, ua)
+    return {"status": "success", "token": token}
+
+@router.post("/login")
+def login_user(payload: LoginRequest, request: Request):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, password_hash FROM users WHERE email=?", (payload.email,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row or not verify_password(row[1], payload.password):
+        raise HTTPException(status_code=401, detail="Невірний email або пароль")
+    
+    ip = request.client.host if request.client else "unknown"
+    ua = request.headers.get("user-agent", "unknown")
+    token = create_session(row[0], ip, ua)
+    return {"status": "success", "token": token}
+
+@router.get("/sessions")
+def get_active_sessions(credentials: HTTPAuthorizationCredentials = Depends(security_scheme)):
+    current_token = credentials.credentials
+    current_user_id = verify_session_token(current_token)
+    
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT token, ip_address, user_agent, created_at FROM sessions WHERE user_id=?", (current_user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    
+    sessions_list = []
+    for row in rows:
+        token, ip, ua, created_at = row
+        readable_device = parse_user_agent(ua)
+        readable_date = datetime.fromtimestamp(created_at).strftime("%d.%m.%Y %H:%M") if created_at else "Невідомо"
+        
+        sessions_list.append({
+            "token": token,
+            "device": readable_device,
+            "ip": ip or "unknown",
+            "date": readable_date,
+            "is_current": token == current_token
+        })
+    return sessions_list
+
+@router.post("/sessions/revoke")
+def revoke_session(payload: RevokeRequest, credentials: HTTPAuthorizationCredentials = Depends(security_scheme)):
+    current_token = credentials.credentials
+    verify_session_token(current_token)
+    
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM sessions WHERE token=?", (payload.token,))
+    conn.commit()
+    conn.close()
+    return {"status": "success"}
+</file>
+
+<file path="routers/frontend.py">
+import os
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import HTMLResponse
+from core.database import BASE_DIR
+
+router = APIRouter(tags=["Frontend"])
+
+@router.get("/", response_class=HTMLResponse)
+def get_home_page():
+    html_path = os.path.join(BASE_DIR, "templates", "index.html")
+    try:
+        with open(html_path, "r", encoding="utf-8") as f: 
+            return f.read()
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Файл шаблону templates/index.html не знайдено.")
+</file>
+
+<file path="routers/printers.py">
+import sqlite3
+from fastapi import APIRouter, HTTPException, Depends, Request
+from core.database import DB_FILE, save_ip_to_db
+from core.models import RenamePrinterRequest, NewPrinterRequest, IPRequest
+from core.security import get_current_user
+from core.network_scanner import scan_network_for_printers_tcp
+
+router = APIRouter(tags=["Printers"])
+
+@router.get("/api/printers", dependencies=[Depends(get_current_user)])
+def get_printers_list():
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name, type, host, port FROM printers ORDER BY id ASC")
+        rows = cursor.fetchall()
+        conn.close()
+        
+        printers = [{"id": r[0], "name": r[1], "type": r[2], "host": r[3], "port": r[4]} for r in rows]
+        return {"status": "success", "printers": printers}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Помилка: {e}")
+
+@router.put("/api/printers/{printer_id}/rename", dependencies=[Depends(get_current_user)])
+async def rename_printer(printer_id: int, payload: RenamePrinterRequest):
+    new_name = payload.name.strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="Назва не може бути порожньою")
+    
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE printers SET name=? WHERE id=?", (new_name, printer_id))
+    if cursor.rowcount == 0:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Принтер не знайдено")
+        
+    conn.commit()
+    conn.close()
+    return {"status": "success", "new_name": new_name}
+
+@router.post("/api/printers", dependencies=[Depends(get_current_user)])
+async def add_new_printer(payload: NewPrinterRequest, request: Request):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO printers (name, type, host, port, api_key) VALUES (?, ?, ?, ?, ?)",
+        (payload.name, payload.type, payload.host, payload.port, payload.api_key)
+    )
+    conn.commit()
+    new_id = cursor.lastrowid
+    conn.close()
+    
+    manager = request.app.state.manager
+    manager.start_printer_client(new_id, payload.type, payload.host, payload.port, payload.api_key)
+    return {"status": "success", "printer_id": new_id}
+
+@router.get("/api/printers/{printer_id}/status", dependencies=[Depends(get_current_user)])
+async def get_printer_status(printer_id: int, request: Request):
+    manager = request.app.state.manager
+    client = manager.clients.get(printer_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Принтер не знайдено або він не запущений")
+    return {
+        "printer_id": printer_id,
+        "connected": client.is_connected,
+        "telemetry": client.state
+    }
+
+# --- ШАР СУМІСНОСТІ З ТЕСТОВИМ UI ---
+@router.get("/printer/status", dependencies=[Depends(get_current_user)])
+async def get_status_compatibility(request: Request):
+    manager = request.app.state.manager
+    if not manager.clients:
+        return {
+            "configured_ip": "Не налаштовано",
+            "connected": False,
+            "telemetry": {
+                "temps": {"extruder": {"current": 0.0, "target": 0.0}, "bed": {"current": 0.0, "target": 0.0}, "chamber": {"current": 0.0, "target": 0.0}},
+                "fans": {"part_cooling": 0.0},
+                "print_state": "not_configured",
+                "raw_telemetry": {}
+            }
+        }
+    first_id = list(manager.clients.keys())[0]
+    client = manager.clients[first_id]
+    return {"configured_ip": client.host, "connected": client.is_connected, "telemetry": client.state}
+
+@router.post("/settings/printer-ip", dependencies=[Depends(get_current_user)])
+async def update_printer_ip_compatibility(payload: IPRequest, request: Request):
+    ip = payload.ip.strip()
+    p_type = payload.type.strip().lower()
+    api_key = payload.api_key.strip() if payload.api_key else ""
+    name = payload.name.strip() if payload.name else "Default Printer"
+    
+    if not ip: raise HTTPException(status_code=400, detail="IP не може бути пустим")
+    save_ip_to_db(ip)
+    
+    host, port = ip, 80
+    if p_type == "klipper": port = 7125
+    elif p_type == "octoprint": port = 5000
+
+    if ":" in ip:
+        try:
+            host, port_str = ip.split(":")
+            port = int(port_str)
+        except Exception: pass
+
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM printers WHERE name=?", (name,))
+    row = cursor.fetchone()
+    
+    manager = request.app.state.manager
+    if row:
+        p_id = row[0]
+        cursor.execute("UPDATE printers SET type=?, host=?, port=?, api_key=? WHERE id=?", (p_type, host, port, api_key, p_id))
+        conn.commit()
+        if p_id in manager.clients:
+            await manager.stop_printer_client(p_id)
+        manager.start_printer_client(p_id, p_type, host, port, api_key)
+    else:
+        cursor.execute("INSERT INTO printers (name, type, host, port, api_key) VALUES (?, ?, ?, ?, ?)", (name, p_type, host, port, api_key))
+        conn.commit()
+        new_id = cursor.lastrowid
+        manager.start_printer_client(new_id, p_type, host, port, api_key)
+        
+    conn.close()
+    return {"status": "success", "saved_ip": ip, "type": p_type, "name": name}
+
+@router.post("/settings/scan", dependencies=[Depends(get_current_user)])
+async def scan_printers():
+    found = await scan_network_for_printers_tcp()
+    return {"status": "success", "printers": found}
+</file>
+
+<file path="static/js/auth.js">
+async function checkAuthStatus() {
+    try {
+        const response = await fetch("/api/auth/status");
+        const data = await response.json();
+        isSystemRegistered = data.is_registered;
+
+        const titleEl = document.getElementById("auth-title");
+        const subtitleEl = document.getElementById("auth-subtitle");
+        const btnEl = document.getElementById("auth-btn");
+
+        if (isSystemRegistered) {
+            titleEl.innerText = "Авторизація";
+            subtitleEl.innerText = "Увійдіть, щоб отримати доступ до принтера";
+            btnEl.innerText = "Увійти";
+        } else {
+            titleEl.innerText = "Первинне налаштування";
+            subtitleEl.innerText = "Створіть акаунт адміністратора системи";
+            btnEl.innerText = "Зареєструватися";
+        }
+
+        const token = localStorage.getItem("session_token");
+        if (token) {
+            showMainPanel();
+        }
+    } catch (e) {
+        console.error("Помилка ініціалізації авторизації:", e);
+    }
+}
+
+async function handleAuth(event) {
+    event.preventDefault();
+    const email = document.getElementById("auth-email").value;
+    const password = document.getElementById("auth-password").value;
+
+    const endpoint = isSystemRegistered ? "/api/auth/login" : "/api/auth/register";
+
+    try {
+        const response = await fetch(endpoint, {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({email, password})
+        });
+
+        if (!response.ok) {
+            const err = await response.json();
+            alert("Помилка: " + (err.detail || "Невідома помилка"));
+            return;
+        }
+
+        const data = await response.json();
+        if (data.status === "success" && data.token) {
+            localStorage.setItem("session_token", data.token);
+            showMainPanel();
+        }
+    } catch (e) {
+        alert("Помилка з'єднання з сервером.");
+    }
+}
+
+function handleLogout() {
+    localStorage.removeItem("session_token");
+    if (pollingInterval) {
+        clearInterval(pollingInterval);
+        pollingInterval = null;
+    }
+    activePrinterId = null;
+    document.body.className = "bg-gray-900 text-gray-100 font-sans min-h-screen flex items-center justify-center";
+    document.getElementById("main-panel").classList.add("hidden");
+    document.getElementById("auth-box").classList.remove("hidden");
+    checkAuthStatus();
+}
+
+async function loadSessions() {
+    try {
+        const response = await secureFetch("/api/auth/sessions");
+        const data = await response.json();
+        const listDiv = document.getElementById("sessions-list");
+        listDiv.innerHTML = "";
+        
+        data.forEach(sess => {
+            const item = document.createElement("div");
+            item.className = "flex items-center justify-between bg-gray-900 p-2.5 rounded text-xs border border-gray-950";
+            const currentBadge = sess.is_current ? `<span class="bg-blue-900/60 text-blue-300 px-1 py-0.5 rounded text-[9px] font-bold">Цей пристрій</span>` : "";
+            
+            item.innerHTML = `
+                <div>
+                    <span class="font-bold text-gray-200 block">${sess.device} ${currentBadge}</span>
+                    <span class="text-gray-500 font-mono text-[10px]">${sess.ip} | ${sess.date}</span>
+                </div>
+                ${sess.is_current ? "" : `<button onclick="revokeSession('${sess.token}')" class="bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 px-2 py-1 rounded transition text-[10px] font-bold">Закрити</button>`}
+            `;
+            listDiv.appendChild(item);
+        });
+    } catch (e) {
+        console.error("Помилка завантаження сесій:", e);
+    }
+}
+
+async function revokeSession(tokenToRevoke) {
+    if (!confirm("Ви дійсно хочете закрити сесію для цього пристрою?")) return;
+    try {
+        const response = await secureFetch("/api/auth/sessions/revoke", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({token: tokenToRevoke})
+        });
+        const result = await response.json();
+        if (result.status === "success") {
+            loadSessions();
+        }
+    } catch (e) {
+        alert("Помилка закриття сесії.");
+    }
+}
+</file>
+
+<file path="static/js/crud.js">
+let crudMode = null; // 'spools', 'filaments', 'vendors', 'locations'
+let crudEditId = null; 
+const dbCache = { spools: {}, filaments: {}, vendors: {}, locations: {} };
+
+async function openCrudModal(forcedTab = null, id = null) {
+    crudMode = forcedTab || currentTab;
+    crudEditId = id;
+    
+    const modal = document.getElementById('crud-modal');
+    const title = document.getElementById('crud-modal-title');
+    const fields = document.getElementById('crud-form-fields');
+    
+    modal.classList.remove('hidden');
+    fields.innerHTML = '<p class="text-xs text-gray-400 text-center">Завантаження...</p>';
+    document.getElementById('crud-save-btn').innerText = id ? 'Зберегти зміни' : 'Створити';
+    
+    const isEdit = !!id;
+    const data = isEdit ? dbCache[crudMode][id] : {};
+
+    if (crudMode === 'vendors' || crudMode === 'locations') {
+        title.innerText = isEdit ? `Редагування: ${data.name}` : (crudMode === 'vendors' ? 'Додати виробника' : 'Додати місце');
+        fields.innerHTML = `
+            <div><label class="block text-xs text-gray-400 mb-1">Назва *</label><input type="text" id="crud-name" value="${data.name||''}" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-white" required></div>
+            <div><label class="block text-xs text-gray-400 mb-1">Коментар</label><input type="text" id="crud-comment" value="${data.comment||''}" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-white"></div>
+        `;
+    } 
+    else if (crudMode === 'filaments') {
+        title.innerText = isEdit ? `Редагувати філамент` : 'Додати філамент';
+        const vRes = await secureFetch('/api/vendors'); const vData = await vRes.json();
+        let vOpts = '<option value="">-- Не вказано --</option>';
+        (vData.vendors||[]).forEach(v => vOpts += `<option value="${v.id}" ${data.vendor_id === v.id ? 'selected':''}>${v.name}</option>`);
+
+        fields.innerHTML = `
+            <div><label class="block text-xs text-gray-400 mb-1">Назва / Колір *</label><input type="text" id="crud-name" value="${data.name||''}" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-white" required></div>
+            <div class="grid grid-cols-2 gap-3">
+                <div><label class="block text-xs text-gray-400 mb-1">Виробник</label><select id="crud-vendor" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-white">${vOpts}</select></div>
+                <div><label class="block text-xs text-gray-400 mb-1">Матеріал (PLA, ABS)</label><input type="text" id="crud-material" value="${data.material||''}" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-white"></div>
+                <div><label class="block text-xs text-gray-400 mb-1">Діаметр (мм)</label><input type="number" step="0.01" id="crud-diam" value="${data.diameter||1.75}" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-white"></div>
+                <div><label class="block text-xs text-gray-400 mb-1">Вага нетто (г)</label><input type="number" step="1" id="crud-weight" value="${data.weight||1000}" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-white"></div>
+                <div><label class="block text-xs text-gray-400 mb-1">Темп. Сопла (°C)</label><input type="number" id="crud-ext" value="${data.ext_temp||''}" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-white"></div>
+                <div><label class="block text-xs text-gray-400 mb-1">Темп. Столу (°C)</label><input type="number" id="crud-bed" value="${data.bed_temp||''}" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-white"></div>
+            </div>
+        `;
+    }
+    else if (crudMode === 'spools') {
+        title.innerText = isEdit ? `Редагувати котушку` : 'Додати котушку';
+        const fRes = await secureFetch('/api/filaments'); const fData = await fRes.json();
+        let fOpts = '<option value="">-- Оберіть пластик --</option>';
+        (fData.filaments||[]).forEach(f => fOpts += `<option value="${f.id}">${f.name} (${f.material})</option>`);
+
+        fields.innerHTML = `
+            ${!isEdit ? `<div><label class="block text-xs text-gray-400 mb-1">Філамент (Матеріал) *</label><select id="crud-filament" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-white" required>${fOpts}</select></div>` : '<p class="text-xs text-blue-400 mb-2">Зміна філаменту для існуючої котушки тимчасово недоступна.</p>'}
+            <div class="grid grid-cols-2 gap-3">
+                <div><label class="block text-xs text-gray-400 mb-1">Початкова вага (г) *</label><input type="number" step="1" id="crud-init-w" value="${data.initial_weight||1000}" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-white" required></div>
+                <div><label class="block text-xs text-gray-400 mb-1">Витрачено (г) *</label><input type="number" step="0.1" id="crud-used-w" value="${data.used_weight||0}" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-white" required></div>
+            </div>
+        `;
+    }
+}
+
+function closeCrudModal() {
+    document.getElementById('crud-modal').classList.add('hidden');
+    crudEditId = null;
+}
+
+async function handleCrudSubmit(e) {
+    e.preventDefault();
+    let payload = {};
+    let endpoint = `/api/${crudMode}`;
+    let method = crudEditId ? 'PUT' : 'POST';
+    if (crudEditId) endpoint += `/${crudEditId}`;
+
+    if (crudMode === 'vendors' || crudMode === 'locations') {
+        payload = { name: document.getElementById('crud-name').value, comment: document.getElementById('crud-comment').value };
+    } 
+    else if (crudMode === 'filaments') {
+        payload = {
+            name: document.getElementById('crud-name').value,
+            vendor_id: parseInt(document.getElementById('crud-vendor').value) || null,
+            material: document.getElementById('crud-material').value,
+            diameter: parseFloat(document.getElementById('crud-diam').value) || 1.75,
+            weight: parseFloat(document.getElementById('crud-weight').value) || 1000,
+            settings_extruder_temp: parseInt(document.getElementById('crud-ext').value) || null,
+            settings_bed_temp: parseInt(document.getElementById('crud-bed').value) || null,
+        };
+    }
+    else if (crudMode === 'spools') {
+        payload = {
+            initial_weight: parseFloat(document.getElementById('crud-init-w').value) || 1000,
+            used_weight: parseFloat(document.getElementById('crud-used-w').value) || 0,
+        };
+        if (!crudEditId) {
+            payload.filament_id = parseInt(document.getElementById('crud-filament').value);
+            if (!payload.filament_id) return alert("Оберіть філамент!");
+        } else {
+            payload.filament_id = 1; // Заглушка, оскільки PUT вимагає id
+        }
+    }
+
+    try {
+        const res = await secureFetch(endpoint, { method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+        if (res.ok) {
+            closeCrudModal();
+            switchInventoryTab(crudMode); // Оновлюємо список
+        } else {
+            const err = await res.json();
+            alert("Помилка: " + JSON.stringify(err));
+        }
+    } catch (error) { alert("Помилка з'єднання"); }
+}
+</file>
+
+<file path="static/js/inventory.js">
+let currentTab = 'spools';
+
+function switchInventoryTab(tabName) {
+    currentTab = tabName;
+    const tabs = ['spools', 'filaments', 'vendors', 'locations'];
+
+    tabs.forEach(tab => {
+        const btn = document.getElementById(`tab-btn-${tab}`);
+        const container = document.getElementById(`inventory-${tab}`);
+        
+        if (tab === tabName) {
+            btn.className = "bg-blue-600 text-white px-4 py-1.5 rounded text-xs font-bold transition";
+            container.classList.remove('hidden');
+        } else {
+            btn.className = "bg-gray-900 text-gray-400 hover:text-gray-200 px-4 py-1.5 rounded text-xs font-bold transition border border-gray-800";
+            container.classList.add('hidden');
+        }
+    });
+
+    // Оновлюємо текст кнопки "Додати"
+    const addBtnText = document.getElementById('crud-add-text');
+    if (addBtnText) {
+        if (tabName === 'spools') addBtnText.innerText = "Додати котушку";
+        if (tabName === 'filaments') addBtnText.innerText = "Додати філамент";
+        if (tabName === 'vendors') addBtnText.innerText = "Додати виробника";
+        if (tabName === 'locations') addBtnText.innerText = "Додати місце";
+    }
+
+    if (tabName === 'spools') loadSpools();
+    else if (tabName === 'filaments') loadFilaments();
+    else if (tabName === 'vendors') loadVendors();
+    else if (tabName === 'locations') loadLocations();
+}
+
+async function loadSpools() {
+    try {
+        const response = await secureFetch("/api/spools");
+        const data = await response.json();
+        const container = document.getElementById("inventory-spools");
+        container.innerHTML = "";
+        dbCache.spools = {};
+
+        if (data.status === "success" && data.spools.length > 0) {
+            data.spools.forEach(item => {
+                dbCache.spools[item.id] = item;
+                const remaining = item.initial_weight - item.used_weight;
+                const percentage = Math.max(0, Math.min(100, (remaining / item.initial_weight) * 100));
+                
+                container.innerHTML += `
+                    <div class="bg-gray-900 p-3.5 rounded border border-gray-800 flex flex-col relative group">
+                        <button onclick="openCrudModal('spools', ${item.id})" class="absolute top-2 right-2 bg-gray-800 hover:bg-gray-700 p-1 rounded opacity-0 group-hover:opacity-100 transition z-10 text-xs">✏️</button>
+                        <div class="flex justify-between items-start mb-1 pr-6">
+                            <span class="text-gray-500 font-mono text-[10px] font-bold uppercase tracking-wider">${item.vendor || "Невідомо"}</span>
+                            <span class="bg-blue-950/60 text-blue-300 text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase">${item.material || "?"}</span>
+                        </div>
+                        <h3 class="text-xs font-bold text-gray-200 flex items-center mb-3">
+                            ${item.color_hex ? `<span class="inline-block w-3 h-3 rounded-full border border-gray-700 mr-1.5 align-middle" style="background-color: #${item.color_hex}"></span>` : ""}
+                            ${item.name || "Філамент #" + item.id}
+                        </h3>
+                        <div class="space-y-1">
+                            <div class="flex justify-between text-[11px]"><span class="text-gray-400">Залишилося:</span><span class="font-mono font-bold text-emerald-400">${remaining.toFixed(0)}г / ${item.initial_weight.toFixed(0)}г</span></div>
+                            <div class="w-full bg-gray-800 rounded-full h-1.5 overflow-hidden">
+                                <div class="bg-emerald-500 h-1.5 rounded-full transition-all duration-500" style="width: ${percentage}%"></div>
+                            </div>
+                        </div>
+                    </div>`;
+            });
+        } else {
+            container.innerHTML = '<p class="text-xs text-gray-500 py-6 text-center col-span-full">У вашій базі немає жодної активної котушки.</p>';
+        }
+    } catch (e) {}
+}
+
+async function loadFilaments() {
+    try {
+        const response = await secureFetch("/api/filaments");
+        const data = await response.json();
+        const container = document.getElementById("inventory-filaments");
+        container.innerHTML = "";
+        dbCache.filaments = {};
+
+        if (data.status === "success" && data.filaments.length > 0) {
+            data.filaments.forEach(item => {
+                dbCache.filaments[item.id] = item;
+                container.innerHTML += `
+                    <div class="bg-gray-900 p-3.5 rounded border border-gray-800 flex flex-col relative group">
+                        <button onclick="openCrudModal('filaments', ${item.id})" class="absolute top-2 right-2 bg-gray-800 hover:bg-gray-700 p-1 rounded opacity-0 group-hover:opacity-100 transition z-10 text-xs">✏️</button>
+                        <div class="flex justify-between items-start mb-1 pr-6">
+                            <span class="text-gray-500 font-mono text-[10px] font-bold uppercase">ID: ${item.id}</span>
+                            <span class="bg-purple-950/60 text-purple-300 text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase">${item.material || "?"}</span>
+                        </div>
+                        <h3 class="text-xs font-bold text-gray-200 flex items-center mb-3">
+                            ${item.color_hex ? `<span class="inline-block w-3 h-3 rounded-full border border-gray-700 mr-1.5 align-middle" style="background-color: #${item.color_hex}"></span>` : ""} 
+                            ${item.name || "Без назви"}
+                        </h3>
+                        <div class="text-[10px] text-gray-400 space-y-1">
+                            <p class="flex justify-between border-b border-gray-800 pb-1"><span>Діаметр:</span> <span class="text-gray-200">${item.diameter || 1.75} мм</span></p>
+                            <p class="flex justify-between border-b border-gray-800 pb-1 pt-1"><span>Щільність:</span> <span class="text-gray-200">${item.density || 0} г/см³</span></p>
+                            <p class="flex justify-between pt-1"><span>Темп. (сопло/стіл):</span> <span class="text-gray-200 font-mono">${item.ext_temp || '-'}° / ${item.bed_temp || '-'}°</span></p>
+                        </div>
+                    </div>`;
+            });
+        } else {
+            container.innerHTML = '<p class="text-xs text-gray-500 py-6 text-center col-span-full">Немає збереженого філаменту.</p>';
+        }
+    } catch (e) {}
+}
+
+async function loadVendors() {
+    try {
+        const response = await secureFetch("/api/vendors");
+        const data = await response.json();
+        const container = document.getElementById("inventory-vendors");
+        container.innerHTML = "";
+        dbCache.vendors = {};
+
+        if (data.status === "success" && data.vendors.length > 0) {
+            data.vendors.forEach(item => {
+                dbCache.vendors[item.id] = item;
+                container.innerHTML += `
+                    <div class="bg-gray-900 p-3.5 rounded border border-gray-800 flex items-center justify-between group">
+                        <div class="flex items-center gap-3">
+                            <div class="bg-gray-800 p-2 rounded text-xl">🏭</div>
+                            <div>
+                                <h3 class="text-sm font-bold text-gray-200 leading-tight">${item.name}</h3>
+                                ${item.comment ? `<p class="text-[10px] text-gray-400 mt-0.5">${item.comment}</p>` : `<p class="text-[10px] text-gray-600 italic mt-0.5">Без опису</p>`}
+                            </div>
+                        </div>
+                        <button onclick="openCrudModal('vendors', ${item.id})" class="bg-gray-800 hover:bg-gray-700 p-1.5 rounded opacity-0 group-hover:opacity-100 transition text-xs">✏️</button>
+                    </div>`;
+            });
+        } else {
+            container.innerHTML = '<p class="text-xs text-gray-500 py-6 text-center col-span-full">Немає збережених виробників.</p>';
+        }
+    } catch (e) {}
+}
+
+async function loadLocations() {
+    try {
+        const response = await secureFetch("/api/locations");
+        const data = await response.json();
+        const container = document.getElementById("inventory-locations");
+        container.innerHTML = "";
+        dbCache.locations = {};
+
+        if (data.status === "success" && data.locations.length > 0) {
+            data.locations.forEach(item => {
+                dbCache.locations[item.id] = item;
+                container.innerHTML += `
+                    <div class="bg-gray-900 p-3.5 rounded border border-gray-800 flex items-center justify-between group">
+                        <div class="flex items-center gap-3">
+                            <div class="bg-gray-800 p-2 rounded text-xl">📍</div>
+                            <div>
+                                <h3 class="text-sm font-bold text-gray-200 leading-tight">${item.name}</h3>
+                                ${item.comment ? `<p class="text-[10px] text-gray-400 mt-0.5">${item.comment}</p>` : `<p class="text-[10px] text-gray-600 italic mt-0.5">Без опису</p>`}
+                            </div>
+                        </div>
+                        <button onclick="openCrudModal('locations', ${item.id})" class="bg-gray-800 hover:bg-gray-700 p-1.5 rounded opacity-0 group-hover:opacity-100 transition text-xs">✏️</button>
+                    </div>`;
+            });
+        } else {
+            container.innerHTML = '<p class="text-xs text-gray-500 py-6 text-center col-span-full">У базі немає збережених місць (локацій).</p>';
+        }
+    } catch (e) {}
+}
+
+async function importFromSpoolman(btn) {
+    const url = document.getElementById("spoolman-url-input").value;
+    if (!url) return alert("Будь ласка, введіть URL вашого сервера Spoolman.");
+    if (!confirm("Ви дійсно хочете завантажити дані?")) return;
+    const oldText = btn.innerText;
+    btn.innerText = "⏳ Йде імпорт...";
+    btn.disabled = true;
+
+    try {
+        const response = await secureFetch("/api/spoolman/import", {
+            method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({spoolman_url: url})
+        });
+        if (!response.ok) return alert("Помилка імпорту");
+        const result = await response.json();
+        if (result.status === "success") {
+            alert(`Успішно імпортовано:\n- Виробників: ${result.imported.vendors}\n- Пластику: ${result.imported.filaments}\n- Котушок: ${result.imported.spools}`);
+            switchInventoryTab('spools');
+        }
+    } catch (e) { alert("Помилка з'єднання з сервером."); } 
+    finally { btn.innerText = oldText; btn.disabled = false; }
+}
+</file>
+
+<file path="static/js/printers.js">
+async function loadPrinterTabs() {
+    try {
+        const response = await secureFetch("/api/printers");
+        const data = await response.json();
+        const container = document.getElementById("printer-tabs-container");
+        container.innerHTML = "";
+        
+        registeredPrinters = data.printers || [];
+
+        if (registeredPrinters.length > 0) {
+            if (!activePrinterId) {
+                activePrinterId = registeredPrinters[0].id;
+            }
+
+            registeredPrinters.forEach(printer => {
+                const btn = document.createElement("button");
+                const isActive = printer.id === activePrinterId;
+                
+                btn.className = isActive 
+                    ? "flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-extrabold px-3 py-1 rounded transition uppercase tracking-wider"
+                    : "flex items-center gap-1.5 bg-gray-900 hover:bg-gray-800 text-gray-400 text-[10px] font-extrabold px-3 py-1 rounded transition uppercase tracking-wider border border-gray-800";
+                
+                if (isActive) {
+                    btn.innerHTML = `
+                        <span>${printer.name}</span>
+                        <span class="text-xs hover:text-blue-200 transition" title="Змінити назву" onclick="renamePrinter(event, ${printer.id}, '${printer.name}')">✏️</span>
+                    `;
+                } else {
+                    btn.innerText = printer.name;
+                }
+
+                btn.onclick = (e) => {
+                    if (e.target.tagName !== 'SPAN' || !e.target.title) {
+                        activePrinterId = printer.id;
+                        loadPrinterTabs();
+                        pollStatus();
+                    }
+                };
+                container.appendChild(btn);
+            });
+        } else {
+            container.innerHTML = '<p class="text-xs text-gray-500 py-1 mr-2">Жодного принтера ще не додано.</p>';
+            activePrinterId = null;
+        }
+
+    } catch (e) {
+        console.error("Помилка завантаження вкладок принтерів:", e);
+    }
+}
+
+async function renamePrinter(event, printerId, currentName) {
+    event.stopPropagation(); 
+    
+    const newName = prompt("Введіть нову назву для цього принтера:", currentName);
+    
+    if (newName && newName.trim() !== "" && newName !== currentName) {
+        try {
+            const response = await secureFetch(`/api/printers/${printerId}/rename`, {
+                method: "PUT",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({ name: newName.trim() })
+            });
+            const result = await response.json();
+            if (response.ok && result.status === "success") {
+                loadPrinterTabs();
+            } else {
+                alert("Помилка сервера: " + (result.detail || JSON.stringify(result)));
+            }
+        } catch (e) {
+            alert("Помилка з'єднання: " + e.message);
+        }
+    }
+}
+
+async function pollStatus() {
+    if (!activePrinterId) {
+        document.getElementById("current-ip").innerText = "Не налаштовано";
+        document.getElementById("connection-status").innerText = "НЕМАЄ ЗВ'ЯЗКУ (NOT_CONFIGURED)";
+        document.getElementById("connection-status").className = "px-2 py-0.5 rounded text-[10px] font-bold bg-rose-950 text-rose-300";
+        document.getElementById("temp-extruder").innerText = "0.0°C";
+        document.getElementById("target-extruder").innerText = "Ціль: 0°C";
+        document.getElementById("temp-bed").innerText = "0.0°C";
+        document.getElementById("target-bed").innerText = "Ціль: 0°C";
+        document.getElementById("dynamic-sensors-container").innerHTML = '<p class="text-xs text-gray-500 text-center py-8">Додайте принтер у меню праворуч.</p>';
+        return;
+    }
+
+    try {
+        const response = await secureFetch("/api/printers/" + activePrinterId + "/status");
+        const data = await response.json();
+        
+        const printerInfo = registeredPrinters.find(p => p.id === activePrinterId);
+        const hostStr = printerInfo ? `${printerInfo.host}:${printerInfo.port} (${printerInfo.type.toUpperCase()})` : "...";
+        
+        document.getElementById("current-ip").innerText = hostStr;
+        
+        const statusEl = document.getElementById("connection-status");
+        if (data.connected) {
+            statusEl.innerText = "ПІДКЛЮЧЕНО (" + data.telemetry.print_state.toUpperCase() + ")";
+            statusEl.className = "px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-900 text-emerald-300";
+        } else {
+            statusEl.innerText = "НЕМАЄ ЗВ'ЯЗКУ (" + data.telemetry.print_state.toUpperCase() + ")";
+            statusEl.className = "px-2 py-0.5 rounded text-[10px] font-bold bg-rose-950 text-rose-300";
+        }
+
+        const temps = data.telemetry.temps || { extruder: {current: 0, target: 0}, bed: {current: 0, target: 0} };
+        document.getElementById("temp-extruder").innerText = temps.extruder.current.toFixed(1) + "°C";
+        document.getElementById("target-extruder").innerText = "Ціль: " + temps.extruder.target.toFixed(0) + "°C";
+        document.getElementById("temp-bed").innerText = temps.bed.current.toFixed(1) + "°C";
+        document.getElementById("target-bed").innerText = "Ціль: " + temps.bed.target.toFixed(0) + "°C";
+
+        const container = document.getElementById("dynamic-sensors-container");
+        const rawTelemetry = data.telemetry.raw_telemetry || {};
+
+        if (Object.keys(rawTelemetry).length === 0) {
+            container.innerHTML = '<p class="text-xs text-gray-500 text-center py-8">Немає додаткових активних датчиків.</p>';
+            return;
+        }
+
+        container.innerHTML = "";
+        
+        for (const [sensorName, sensorValue] of Object.entries(rawTelemetry)) {
+            if (sensorName === "job") continue;
+
+            const card = document.createElement("div");
+            card.className = "bg-gray-900 p-2.5 rounded border border-gray-800";
+
+            let html = `<p class="text-[11px] font-bold text-blue-400 border-b border-gray-800 pb-0.5 font-mono">${sensorName}</p>`;
+            
+            if (typeof sensorValue === "object" && sensorValue !== null) {
+                html += `<div class="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-0.5 mt-1 text-[11px]">`;
+                for (const [propName, propValue] of Object.entries(sensorValue)) {
+                    const displayValue = typeof propValue === "number" ? propValue.toFixed(1) : propValue;
+                    html += `
+                        <div class="flex justify-between py-0.5 border-b border-gray-950">
+                            <span class="text-gray-500 font-mono text-[10px]">${propName}:</span>
+                            <span class="font-bold text-gray-300 font-mono text-[10px]">${displayValue}</span>
+                        </div>
+                    `;
+                }
+                html += "</div>";
+            } else {
+                const displayValue = typeof sensorValue === "number" ? sensorValue.toFixed(1) : sensorValue;
+                html += `
+                    <div class="flex justify-between text-[11px] mt-1">
+                        <span class="text-gray-500 font-mono text-[10px]">value:</span>
+                        <span class="font-bold text-gray-300 font-mono text-[10px]">${displayValue}</span>
+                    </div>
+                `;
+            }
+            card.innerHTML = html;
+            container.appendChild(card);
+        }
+    } catch (e) {
+        console.error("Помилка опитування статусу:", e);
+    }
+}
+
+async function saveManualIP(ipFromScan = null, forcedType = null, forcedPort = null) {
+    const type = forcedType || document.getElementById("printer-type-select").value;
+    let apiKey = forcedType ? "" : document.getElementById("manual-api-key").value;
+    
+    if (forcedType === "octoprint") {
+        const userKey = prompt("Цьому принтеру OctoPrint потрібен API-ключ. Будь ласка, введіть його:");
+        if (userKey === null) return; 
+        apiKey = userKey.trim();
+        if (!apiKey) return alert("API-ключ не може бути порожнім для OctoPrint.");
+    }
+
+    let ip = ipFromScan || document.getElementById("manual-ip-input").value;
+    if (forcedPort && !ip.includes(":")) {
+        ip = ip + ":" + forcedPort;
+    }
+
+    let name = "";
+    if (ipFromScan) {
+        const userEnteredName = prompt("Введіть назву для цього принтера.\nЗалиште порожнім, щоб використати назву за замовчуванням:");
+        if (userEnteredName === null) return; 
+        name = userEnteredName.trim();
+    } else {
+        name = document.getElementById("manual-printer-name").value.trim();
+    }
+
+    if (!name) {
+        const cleanIp = ipFromScan || ip;
+        name = type.toUpperCase() + " (" + cleanIp + ")";
+    }
+
+    if (!ip) return alert("Будь ласка, введіть коректну IP-адресу.");
+
+    try {
+        const response = await secureFetch("/settings/printer-ip", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                ip: ip,
+                type: type,
+                api_key: apiKey,
+                name: name
+            })
+        });
+        const result = await response.json();
+        if (result.status === "success") {
+            alert("Принтер '" + result.name + "' успішно збережено.");
+            document.getElementById("manual-ip-input").value = "";
+            document.getElementById("manual-api-key").value = "";
+            document.getElementById("manual-printer-name").value = "";
+            
+            await loadPrinterTabs();
+            loadSessions();
+        }
+    } catch (e) {
+        alert("Помилка збереження.");
+    }
+}
+
+async function startScan() {
+    const scanBtn = document.getElementById("scan-btn");
+    const resultsDiv = document.getElementById("scan-results");
+    const listDiv = document.getElementById("printers-list");
+
+    scanBtn.innerText = "⏳ Йде сканування мережі (2 сек)...";
+    scanBtn.disabled = true;
+
+    try {
+        const response = await secureFetch("/settings/scan", { method: "POST" });
+        const data = await response.json();
+        
+        listDiv.innerHTML = "";
+        resultsDiv.classList.remove("hidden");
+
+        if (data.status === "success" && data.printers.length > 0) {
+            data.printers.forEach(printer => {
+                const item = document.createElement("div");
+                item.className = "flex items-center justify-between bg-gray-900 p-2 rounded text-xs border border-gray-950";
+                item.innerHTML = `
+                    <div>
+                        <span class="font-bold text-gray-200 block">${printer.name} [${printer.type.toUpperCase()}]</span>
+                        <span class="text-gray-500 font-mono">${printer.ip}:${printer.port}</span>
+                    </div>
+                    <button onclick="saveManualIP('${printer.ip}', '${printer.type}', '${printer.port}')" class="bg-emerald-600 hover:bg-emerald-500 px-3 py-1 rounded text-white font-bold transition">Підключити</button>
+                `;
+                listDiv.appendChild(item);
+            });
+        } else {
+            listDiv.innerHTML = '<p class="text-xs text-gray-500 p-2">Пристроїв не знайдено.</p>';
+        }
+    } catch (e) {
+        alert("Помилка сканування.");
+    } finally {
+        scanBtn.innerText = "🔍 Сканувати мережу";
+        scanBtn.disabled = false;
+    }
+}
+
+function togglePrinterTypeFields() {
+    const select = document.getElementById("printer-type-select");
+    const apiKeyContainer = document.getElementById("api-key-container");
+    const ipInput = document.getElementById("manual-ip-input");
+    const ipLabel = document.getElementById("ip-input-label");
+    const apiKeyLabel = apiKeyContainer.querySelector("label");
+
+    if (select.value === "klipper") {
+        apiKeyContainer.classList.add("hidden");
+        ipLabel.innerText = "IP-адреса або хост Klipper:";
+        ipInput.placeholder = "напр. 192.168.1.115 або localhost";
+    } else if (select.value === "octoprint") {
+        apiKeyContainer.classList.remove("hidden");
+        if (apiKeyLabel) apiKeyLabel.innerText = "OctoPrint API Key:";
+        ipLabel.innerText = "IP-адреса або хост OctoPrint (з портом):";
+        ipInput.placeholder = "напр. 100.120.186.58:5000";
+    } else if (select.value === "reprap") {
+        apiKeyContainer.classList.remove("hidden");
+        if (apiKeyLabel) apiKeyLabel.innerText = "Пароль до плати (якщо є):";
+        ipLabel.innerText = "IP-адреса або хост Duet/RepRap:";
+        ipInput.placeholder = "напр. 192.168.1.120";
+    }
+}
+</file>
+
+<file path="static/js/state.js">
+// Глобальні змінні стану програми
+let isSystemRegistered = false;
+let pollingInterval = null;
+let activePrinterId = null;       
+let registeredPrinters = [];      
+
+// Універсальна функція для захищених запитів до API
+async function secureFetch(url, options = {}) {
+    const token = localStorage.getItem("session_token");
+    if (!options.headers) options.headers = {};
+    options.headers["Authorization"] = "Bearer " + token;
+
+    const response = await fetch(url, options);
+    if (response.status === 401) {
+        handleLogout();
+        throw new Error("Unauthorized");
+    }
+    return response;
+}
+
+// Запуск головного інтерфейсу
+function showMainPanel() {
+    document.body.className = "bg-gray-900 text-gray-100 font-sans min-h-screen flex items-start justify-start";
+    document.getElementById("auth-box").classList.add("hidden");
+    document.getElementById("main-panel").classList.remove("hidden");
+    
+    if (!pollingInterval) {
+        loadPrinterTabs().then(() => {
+            pollingInterval = setInterval(pollStatus, 1500);
+            pollStatus();
+        });
+        loadSessions();
+        switchInventoryTab('spools');
+    }
+}
+</file>
+
+<file path="static/coment.txt">
+ХУЙВАМФІЛАМЕНТ!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+</file>
+
+<file path=".gitignore">
+# Віртуальне оточення Python
+.venv/
+venv/
+ENV/
+
+# Кеш Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Налаштування VS Code (опціонально, але краще ігнорувати)
+.vscode/
+</file>
+
+<file path="base_client.py">
+import abc
+
+class BasePrinterClient(abc.ABC):
+    def __init__(self, host: str = "", port: int = 7125):
+        self.host = host
+        self.port = port
+        self.active_ws = None
+        self.is_connected = False
+        
+        # Наш єдиний уніфікований стандарт стану принтера.
+        # Будь-який принтер (Klipper, Marlin чи Bambu) зобов'язаний записувати дані саме сюди.
+        self.state = {
+            "connected": False,
+            "print_state": "disconnected",
+            "temps": {
+                "extruder": {"current": 0.0, "target": 0.0},
+                "bed": {"current": 0.0, "target": 0.0},
+                "chamber": {"current": 0.0, "target": 0.0}
+            },
+            "fans": {
+                "part_cooling": 0.0  # від 0 до 100%
+            },
+            "raw_telemetry": {}  # Сюди зливатимемо всі інші "сирі" дані для дебаг-монітора
+        }
+
+    @abc.abstractmethod
+    def set_host(self, host: str):
+        """Встановлення адреси пристрою"""
+        pass
+
+    @abc.abstractmethod
+    async def update_host_and_reconnect(self, new_host: str):
+        """Оновлення адреси та перезапуск з'єднання"""
+        pass
+
+    @abc.abstractmethod
+    async def send_gcode(self, gcode: str) -> dict:
+        """Відправка команди G-коду"""
+        pass
+
+    @abc.abstractmethod
+    async def start_websocket_listener(self):
+        """Запуск фонового слухача телеметрії"""
+        pass
+</file>
+
+<file path="octoprint_client.py">
+import asyncio
+import httpx
+from base_client import BasePrinterClient
+
+class OctoPrintClient(BasePrinterClient):
+    def __init__(self, host: str = "", port: int = 5000, api_key: str = ""):
+        super().__init__(host, port)
+        self.api_key = api_key
+        if host:
+            self.set_host(host)
+        else:
+            self.host = ""
+            self.base_url = ""
+            print("[OCTOPRINT CLIENT] Ініціалізовано без хоста.")
+
+    def set_host(self, host: str):
+        self.host = host
+        self.base_url = f"http://{host}:{self.port}"
+        print(f"[OCTOPRINT CLIENT] Новий хост: {self.host} (REST API: {self.base_url})")
+
+    async def update_host_and_reconnect(self, new_host: str):
+        print(f"[OCTOPRINT CLIENT] Запит на зміну хоста на: {new_host}")
+        self.set_host(new_host)
+        # Оскільки у нас HTTP-опитування (polling), перепідключати сокет не потрібно.
+        # Наступний цикл сам надішле запит на нову адресу.
+
+    async def send_gcode(self, gcode: str) -> dict:
+        if not self.host or not self.api_key:
+            return {"error": "Not configured"}
+        try:
+            headers = {"X-Api-Key": self.api_key}
+            async with httpx.AsyncClient() as client:
+                # В OctoPrint команди надсилаються на /api/printer/command
+                response = await client.post(
+                    f"{self.base_url}/api/printer/command",
+                    json={"commands": [gcode]},
+                    headers=headers
+                )
+                return {"status": "success", "status_code": response.status_code}
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def start_websocket_listener(self):
+        """Фоновий процес опитування (HTTP Polling) замість WebSockets"""
+        print("[OCTOPRINT CLIENT] Фоновий процес опитування OctoPrint запущено.")
+        headers = {}
+        
+        while True:
+            if not self.host or not self.api_key:
+                self.state["print_state"] = "not_configured"
+                self.is_connected = False
+                self.state["connected"] = False
+                await asyncio.sleep(5)
+                continue
+
+            headers["X-Api-Key"] = self.api_key
+            
+            try:
+                async with httpx.AsyncClient(timeout=3.0) as client:
+                    # 1. Запитуємо температури та загальний стан
+                    p_resp = await client.get(f"{self.base_url}/api/printer", headers=headers)
+                    # 2. Запитуємо статус поточного друку (назва файлу, прогрес)
+                    j_resp = await client.get(f"{self.base_url}/api/job", headers=headers)
+
+                if p_resp.status_code == 200:
+                    self.is_connected = True
+                    self.state["connected"] = True
+                    p_data = p_resp.json()
+                    
+                    # Оновлюємо сирі дані для нашої дебаг-панелі
+                    self.state["raw_telemetry"] = p_data
+                    
+                    # Інтегруємо дані про роботу
+                    if j_resp.status_code == 200:
+                        j_data = j_resp.json()
+                        self.state["raw_telemetry"]["job"] = j_data
+                        self.state["print_state"] = j_data.get("state", "unknown").lower()
+                    else:
+                        self.state["print_state"] = p_data.get("state", {}).get("text", "unknown").lower()
+
+                    # Мапимо дані в наш Уніфікований Стандарт (self.state)
+                    temps = p_data.get("temperature", {})
+                    
+                    # OctoPrint називає сопло як "tool0"
+                    if "tool0" in temps:
+                        self.state["temps"]["extruder"]["current"] = temps["tool0"].get("actual", self.state["temps"]["extruder"]["current"])
+                        self.state["temps"]["extruder"]["target"] = temps["tool0"].get("target", self.state["temps"]["extruder"]["target"])
+                    
+                    if "bed" in temps:
+                        self.state["temps"]["bed"]["current"] = temps["bed"].get("actual", self.state["temps"]["bed"]["current"])
+                        self.state["temps"]["bed"]["target"] = temps["bed"].get("target", self.state["temps"]["bed"]["target"])
+
+                    print(f"[OCTOPRINT CLIENT STATE UPDATE] Оновлено уніфікований стан: {self.state}", flush=True)
+                else:
+                    self.is_connected = False
+                    self.state["connected"] = False
+                    self.state["print_state"] = "auth_error"
+                    print(f"[OCTOPRINT CLIENT ERROR] Помилка ключа API. Статус: {p_resp.status_code}", flush=True)
+
+            except Exception as e:
+                self.is_connected = False
+                self.state["connected"] = False
+                self.state["print_state"] = "disconnected"
+                print(f"[OCTOPRINT CLIENT WS ERROR] Помилка: {type(e).__name__} - {e}. Повтор...", flush=True)
+
+            # Опитуємо OctoPrint кожні 1.5 секунди
+            await asyncio.sleep(1.5)
+</file>
+
+<file path="reprap_client.py">
+import asyncio
+import httpx
+from base_client import BasePrinterClient
+
+class RepRapClient(BasePrinterClient):
+    def __init__(self, host: str = "", port: int = 80, password: str = ""):
+        super().__init__(host, port)
+        self.password = password
+        self.session_connected = False
+        if host:
+            self.set_host(host)
+        else:
+            self.host = ""
+            self.base_url = ""
+            print("[REPRAP CLIENT] Ініціалізовано без хоста.")
+
+    def set_host(self, host: str):
+        self.host = host
+        # За замовчуванням Duet працює на порті 80
+        self.base_url = f"http://{host}:{self.port}"
+        print(f"[REPRAP CLIENT] Новий хост: {self.host} (REST API: {self.base_url})")
+
+    async def update_host_and_reconnect(self, new_host: str):
+        print(f"[REPRAP CLIENT] Запит на зміну хоста на: {new_host}")
+        self.set_host(new_host)
+        self.session_connected = False
+
+    async def send_gcode(self, gcode: str) -> dict:
+        if not self.host:
+            return {"error": "Not configured"}
+        try:
+            async with httpx.AsyncClient() as client:
+                # В RRF команди надсилаються через GET/POST на /rr_gcode
+                response = await client.get(
+                    f"{self.base_url}/rr_gcode",
+                    params={"gcode": gcode},
+                    timeout=5.0
+                )
+                return {"status": "success", "status_code": response.status_code, "response": response.text}
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def start_websocket_listener(self):
+        """Фоновий процес HTTP-опитування RepRapFirmware"""
+        print("[REPRAP CLIENT] Фоновий процес опитування RepRapFirmware запущено.")
+        
+        while True:
+            if not self.host:
+                self.state["print_state"] = "not_configured"
+                self.is_connected = False
+                self.state["connected"] = False
+                await asyncio.sleep(5)
+                continue
+
+            try:
+                async with httpx.AsyncClient(timeout=3.0) as client:
+                    # 1. Авторизація за паролем (якщо він заданий у налаштуваннях)
+                    if not self.session_connected and self.password:
+                        try:
+                            conn_resp = await client.get(
+                                f"{self.base_url}/rr_connect", 
+                                params={"password": self.password}
+                            )
+                            if conn_resp.status_code == 200:
+                                self.session_connected = True
+                        except Exception:
+                            # Продовжуємо без сесії, якщо плата відкрита без пароля
+                            pass
+                    
+                    # 2. Опитуємо всю Object Model
+                    response = await client.get(f"{self.base_url}/rr_model")
+
+                if response.status_code == 200:
+                    self.is_connected = True
+                    self.state["connected"] = True
+                    data = response.json()
+                    
+                    # Зберігаємо "сиру" телеметрію для дебаг-панелі
+                    self.state["raw_telemetry"] = data
+                    
+                    # Деякі версії повертають об'єкт у полі "result", деякі - відразу в корені
+                    result = data.get("result", {}) if "result" in data else data
+                    
+                    # --- ПАРСИНГ СТАТУСУ ---
+                    state_obj = result.get("state", {})
+                    status_str = state_obj.get("status", "idle").lower()
+                    
+                    # Мапимо специфічні стани RRF в уніфікований стандарт
+                    if status_str in ["processing", "simulating"]:
+                        self.state["print_state"] = "printing"
+                    elif status_str in ["paused", "pausing"]:
+                        self.state["print_state"] = "paused"
+                    else:
+                        self.state["print_state"] = status_str
+
+                    # --- ПАРСИНГ ТЕМПЕРАТУР ---
+                    heat_obj = result.get("heat", {})
+                    heaters = heat_obj.get("heaters", [])
+                    
+                    # Для стандартних RRF конфігурацій:
+                    # Heater 0 -> стіл (heater_bed)
+                    # Heater 1 -> перший хотенд (extruder)
+                    if len(heaters) > 0:
+                        bed_heater = heaters[0]
+                        self.state["temps"]["bed"]["current"] = bed_heater.get("current", 0.0)
+                        
+                        bed_state = bed_heater.get("state", "off").lower()
+                        if bed_state == "active":
+                            self.state["temps"]["bed"]["target"] = bed_heater.get("active", 0.0)
+                        elif bed_state == "standby":
+                            self.state["temps"]["bed"]["target"] = bed_heater.get("standby", 0.0)
+                        else:
+                            self.state["temps"]["bed"]["target"] = 0.0
+                            
+                    if len(heaters) > 1:
+                        ext_heater = heaters[1]
+                        self.state["temps"]["extruder"]["current"] = ext_heater.get("current", 0.0)
+                        
+                        ext_state = ext_heater.get("state", "off").lower()
+                        if ext_state == "active":
+                            self.state["temps"]["extruder"]["target"] = ext_heater.get("active", 0.0)
+                        elif ext_state == "standby":
+                            self.state["temps"]["extruder"]["target"] = ext_heater.get("standby", 0.0)
+                        else:
+                            self.state["temps"]["extruder"]["target"] = 0.0
+
+                    # --- ПАРСИНГ ОБДУВУ ---
+                    fans = result.get("fans", [])
+                    if len(fans) > 0:
+                        # actualValue в RRF лежить в діапазоні 0.0-1.0, множимо на 100
+                        self.state["fans"]["part_cooling"] = fans[0].get("actualValue", 0.0) * 100
+
+                    print(f"[REPRAP CLIENT STATE UPDATE] Оновлено стан: {self.state}", flush=True)
+                else:
+                    self.is_connected = False
+                    self.state["connected"] = False
+                    self.state["print_state"] = "disconnected"
+
+            except Exception as e:
+                self.is_connected = False
+                self.state["connected"] = False
+                self.state["print_state"] = "disconnected"
+                print(f"[REPRAP CLIENT ERROR] Помилка: {type(e).__name__} - {e}. Повтор...", flush=True)
+
+            # Робимо паузу 1.5 секунди перед наступним опитуванням
+            await asyncio.sleep(1.5)
+</file>
+
+<file path="core/models.py">
+from pydantic import BaseModel
+from typing import Optional
+
+class RenamePrinterRequest(BaseModel):
+    name: str
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class IPRequest(BaseModel):
+    ip: str
+    type: str = "klipper"      
+    api_key: str = ""          
+    name: str = "Default Printer" 
+
+class RevokeRequest(BaseModel):
+    token: str
+
+class SpoolmanImportRequest(BaseModel):
+    spoolman_url: str
+
+class NewPrinterRequest(BaseModel):
+    name: str
+    type: str
+    host: str
+    port: int
+    api_key: Optional[str] = None
+
+# --- ДОДАТИ В КІНЕЦЬ ФАЙЛУ core/models.py ---
+
+class VendorCreateUpdate(BaseModel):
+    name: str
+    comment: Optional[str] = None
+    deleted: int = 0
+
+class LocationCreateUpdate(BaseModel):
+    name: str
+    comment: Optional[str] = None
+
+class FilamentCreateUpdate(BaseModel):
+    name: Optional[str] = None
+    vendor_id: Optional[int] = None
+    material: Optional[str] = None
+    price: Optional[float] = None
+    density: float = 1.24
+    diameter: float = 1.75
+    weight: Optional[float] = 1000.0
+    spool_weight: Optional[float] = 200.0
+    color_hex: Optional[str] = None
+    comment: Optional[str] = None
+    settings_extruder_temp: Optional[int] = None
+    settings_bed_temp: Optional[int] = None
+    deleted: int = 0
+
+class SpoolCreateUpdate(BaseModel):
+    filament_id: int
+    initial_weight: Optional[float] = None
+    spool_weight: Optional[float] = None
+    used_weight: float = 0.0
+    price: Optional[float] = None
+    comment: Optional[str] = None
+    archived: int = 0
+</file>
+
+<file path="routers/inventory.py">
+import sqlite3
+import json
+import httpx
+from fastapi import APIRouter, HTTPException, Depends
+from core.database import DB_FILE
+from core.models import (
+    SpoolmanImportRequest, 
+    VendorCreateUpdate, LocationCreateUpdate, 
+    FilamentCreateUpdate, SpoolCreateUpdate
+)
+from core.security import get_current_user
+
+router = APIRouter(prefix="/api", tags=["Inventory"])
+
+@router.get("/spools", dependencies=[Depends(get_current_user)])
+def get_spools_list():
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT spool.id, vendor.name, filament.name, filament.material, 
+                   COALESCE(spool.initial_weight, filament.weight, 1000.0) AS initial, 
+                   spool.used_weight, filament.color_hex
+            FROM spool
+            JOIN filament ON spool.filament_id = filament.id
+            JOIN vendor ON filament.vendor_id = vendor.id
+            WHERE spool.archived = 0 ORDER BY spool.id DESC
+        """)
+        rows = cursor.fetchall()
+        conn.close()
+        
+        spools = [{"id": r[0], "vendor": r[1], "name": r[2], "material": r[3], "initial_weight": r[4], "used_weight": r[5], "color_hex": r[6]} for r in rows]
+        return {"status": "success", "spools": spools}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Помилка зчитування бази: {str(e)}")
+
+@router.post("/spoolman/import", dependencies=[Depends(get_current_user)])
+async def import_from_spoolman(payload: SpoolmanImportRequest):
+    base_url = payload.spoolman_url.strip().rstrip("/")
+    if not base_url.endswith("/api/v1"): base_url = f"{base_url}/api/v1"
+    
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            v_resp = await client.get(f"{base_url}/vendor")
+            if v_resp.status_code != 200: raise HTTPException(status_code=400)
+            vendors = v_resp.json() if isinstance(v_resp.json(), list) else []
+            
+            f_resp = await client.get(f"{base_url}/filament")
+            if f_resp.status_code != 200: raise HTTPException(status_code=400)
+            filaments = f_resp.json() if isinstance(f_resp.json(), list) else []
+            
+            s_resp = await client.get(f"{base_url}/spool")
+            if s_resp.status_code != 200: raise HTTPException(status_code=400)
+            spools = s_resp.json() if isinstance(s_resp.json(), list) else []
+
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA foreign_keys = OFF")
+
+        unique_locations = set(str(s.get("location")).strip() for s in spools if isinstance(s, dict) and s.get("location"))
+        cursor.execute("DELETE FROM location") 
+        for i, loc_name in enumerate(unique_locations, start=1):
+            cursor.execute("INSERT INTO location (id, name, comment) VALUES (?, ?, ?)", (i, loc_name, "Імпортовано зі Spoolman"))
+
+        for v in vendors:
+            if isinstance(v, dict):
+                cursor.execute("INSERT OR REPLACE INTO vendor (id, name, comment, deleted) VALUES (?, ?, ?, ?)", 
+                               (v.get("id"), v.get("name"), v.get("comment"), 1 if v.get("deleted") else 0))
+            
+        for f in filaments:
+            if isinstance(f, dict):
+                v_id = f.get("vendor").get("id") if isinstance(f.get("vendor"), dict) else None
+                cursor.execute("""
+                    INSERT OR REPLACE INTO filament (id, name, vendor_id, material, price, density, diameter, weight, spool_weight, color_hex, comment, settings_extruder_temp, settings_bed_temp, deleted)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (f.get("id"), f.get("name"), v_id, f.get("material"), f.get("price"), f.get("density"), f.get("diameter"), f.get("weight"), f.get("spool_weight"), f.get("color_hex"), f.get("comment"), f.get("settings_extruder_temp"), f.get("settings_bed_temp"), 1 if f.get("deleted") else 0))
+
+        for s in spools:
+            if isinstance(s, dict):
+                f_id = s.get("filament").get("id") if isinstance(s.get("filament"), dict) else None
+                extra_val = json.dumps(s.get("extra")) if s.get("extra") else None
+                cursor.execute("""
+                    INSERT OR REPLACE INTO spool (id, filament_id, registered, first_used, last_used, initial_weight, spool_weight, used_weight, comment, archived, price, extra)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (s.get("id"), f_id, s.get("registered"), s.get("first_used"), s.get("last_used"), s.get("initial_weight"), s.get("spool_weight"), s.get("used_weight", 0.0), s.get("comment"), 1 if s.get("archived") else 0, s.get("price"), extra_val))
+
+        cursor.execute("PRAGMA foreign_keys = ON")
+        conn.commit()
+        conn.close()
+        
+        return {"status": "success", "imported": {"vendors": len(vendors), "filaments": len(filaments), "spools": len(spools), "locations": len(unique_locations)}}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/vendors", dependencies=[Depends(get_current_user)])
+def get_vendors():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, name, comment FROM vendor WHERE deleted=0")
+    rows = cursor.fetchall()
+    conn.close()
+    return {"status": "success", "vendors": [{"id": r[0], "name": r[1], "comment": r[2]} for r in rows]}
+
+@router.get("/filaments", dependencies=[Depends(get_current_user)])
+def get_filaments():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, name, material, vendor_id, diameter, density, color_hex, spool_weight, settings_extruder_temp, settings_bed_temp 
+        FROM filament WHERE deleted=0
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    return {"status": "success", "filaments": [{"id": r[0], "name": r[1], "material": r[2], "vendor_id": r[3], "diameter": r[4] if r[4] is not None else 1.75, "density": r[5], "color_hex": r[6], "spool_weight": r[7], "ext_temp": r[8], "bed_temp": r[9]} for r in rows]}
+
+@router.get("/locations", dependencies=[Depends(get_current_user)])
+def get_locations():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, name, comment FROM location")
+    rows = cursor.fetchall()
+    conn.close()
+    return {"status": "success", "locations": [{"id": r[0], "name": r[1], "comment": r[2]} for r in rows]}
+
+
+# ==========================================
+# CRUD ДЛЯ ВИРОБНИКІВ (VENDORS)
+# ==========================================
+@router.post("/vendors", dependencies=[Depends(get_current_user)])
+def create_vendor(payload: VendorCreateUpdate):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO vendor (name, comment) VALUES (?, ?)", (payload.name, payload.comment))
+    conn.commit()
+    new_id = cursor.lastrowid
+    conn.close()
+    return {"status": "success", "id": new_id}
+
+@router.put("/vendors/{item_id}", dependencies=[Depends(get_current_user)])
+def update_vendor(item_id: int, payload: VendorCreateUpdate):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE vendor SET name=?, comment=?, deleted=? WHERE id=?", 
+                   (payload.name, payload.comment, payload.deleted, item_id))
+    conn.commit()
+    conn.close()
+    return {"status": "success"}
+
+# ==========================================
+# CRUD ДЛЯ ЛОКАЦІЙ (LOCATIONS)
+# ==========================================
+@router.post("/locations", dependencies=[Depends(get_current_user)])
+def create_location(payload: LocationCreateUpdate):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO location (name, comment) VALUES (?, ?)", (payload.name, payload.comment))
+    conn.commit()
+    new_id = cursor.lastrowid
+    conn.close()
+    return {"status": "success", "id": new_id}
+
+@router.put("/locations/{item_id}", dependencies=[Depends(get_current_user)])
+def update_location(item_id: int, payload: LocationCreateUpdate):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE location SET name=?, comment=? WHERE id=?", 
+                   (payload.name, payload.comment, item_id))
+    conn.commit()
+    conn.close()
+    return {"status": "success"}
+
+# ==========================================
+# CRUD ДЛЯ ФІЛАМЕНТУ (FILAMENTS)
+# ==========================================
+@router.post("/filaments", dependencies=[Depends(get_current_user)])
+def create_filament(payload: FilamentCreateUpdate):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO filament (name, vendor_id, material, price, density, diameter, 
+        weight, spool_weight, color_hex, comment, settings_extruder_temp, settings_bed_temp)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (payload.name, payload.vendor_id, payload.material, payload.price, payload.density, 
+          payload.diameter, payload.weight, payload.spool_weight, payload.color_hex, 
+          payload.comment, payload.settings_extruder_temp, payload.settings_bed_temp))
+    conn.commit()
+    new_id = cursor.lastrowid
+    conn.close()
+    return {"status": "success", "id": new_id}
+
+@router.put("/filaments/{item_id}", dependencies=[Depends(get_current_user)])
+def update_filament(item_id: int, payload: FilamentCreateUpdate):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE filament SET name=?, vendor_id=?, material=?, price=?, density=?, diameter=?, 
+        weight=?, spool_weight=?, color_hex=?, comment=?, settings_extruder_temp=?, settings_bed_temp=?, deleted=?
+        WHERE id=?
+    """, (payload.name, payload.vendor_id, payload.material, payload.price, payload.density, 
+          payload.diameter, payload.weight, payload.spool_weight, payload.color_hex, 
+          payload.comment, payload.settings_extruder_temp, payload.settings_bed_temp, payload.deleted, item_id))
+    conn.commit()
+    conn.close()
+    return {"status": "success"}
+
+# ==========================================
+# CRUD ДЛЯ КОТУШОК (SPOOLS)
+# ==========================================
+@router.post("/spools", dependencies=[Depends(get_current_user)])
+def create_spool(payload: SpoolCreateUpdate):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO spool (filament_id, initial_weight, spool_weight, used_weight, price, comment)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (payload.filament_id, payload.initial_weight, payload.spool_weight, payload.used_weight, payload.price, payload.comment))
+    conn.commit()
+    new_id = cursor.lastrowid
+    conn.close()
+    return {"status": "success", "id": new_id}
+
+@router.put("/spools/{item_id}", dependencies=[Depends(get_current_user)])
+def update_spool(item_id: int, payload: SpoolCreateUpdate):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE spool SET filament_id=?, initial_weight=?, spool_weight=?, used_weight=?, price=?, comment=?, archived=?
+        WHERE id=?
+    """, (payload.filament_id, payload.initial_weight, payload.spool_weight, payload.used_weight, payload.price, payload.comment, payload.archived, item_id))
+    conn.commit()
+    conn.close()
+    return {"status": "success"}
+</file>
+
+<file path="docker-compose.yml">
+version: '3.8'
+
+services:
+  backend:
+    build: .
+    container_name: printer-filament-manager
+    restart: unless-stopped
+    
+    # МОНТУВАННЯ ПАПКИ ДЛЯ БАЗИ ДАНИХ
+    # Ваші користувачі та котушки тепер зберігатимуться у папці "./data" на вашому сервері
+    volumes:
+      - ./data:/app/data
+
+    # МЕРЕЖЕВИЙ РЕЖИМ HOST
+    # Запускає контейнер прямо у мережі хоста. Це життєво необхідно на Linux-серверах,
+    # щоб mDNS (автопошук) міг бачити ваш принтер зсередини Docker.
+    network_mode: "host"
+
+    # Примітка: Якщо ви деплоїте на Windows/macOS сервер (де режим "host" не підтримується),
+    # закоментуйте рядок `network_mode: "host"` і розкоментуйте порти нижче:
+    # ports:
+    #   - "8000:8000"
+</file>
+
+<file path="Dockerfile">
+# Використовуємо легкий офіційний образ Python
+FROM python:3.12-slim
+
+# Встановлюємо робочу директорію всередині контейнера
+WORKDIR /app
+
+# Встановлюємо системні утиліти, необхідні для компіляції деяких пакетів
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Копіюємо список залежностей
+COPY requirements.txt .
+
+# Встановлюємо бібліотеки Python
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Копіюємо весь інший код проєкту
+COPY . .
+
+# Створюємо папку для збереження бази даних
+RUN mkdir -p /app/data
+
+# Відкриваємо порт
+EXPOSE 8000
+
+# Команда для запуску нашого FastAPI сервера
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+</file>
+
+<file path="printer_manager.py">
+import sqlite3
+import asyncio
+import os
+from klipper_client import KlipperClient
+from octoprint_client import OctoPrintClient
+from reprap_client import RepRapClient
+
+# Динамічно визначаємо абсолютний шлях до нашої бази даних
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_FILE = os.path.join(BASE_DIR, "data", "settings.db")
+
+class PrinterManager:
+    def __init__(self):
+        self.clients = {}  # {printer_id (int): client_instance}
+        self.tasks = {}    # {printer_id (int): asyncio.Task}
+
+    def load_all_printers(self):
+        print("[PRINTER MANAGER] Початок завантаження принтерів з бази...", flush=True)
+        
+        # Переконуємося, що файл бази даних фізично існує
+        if not os.path.exists(DB_FILE):
+            print("[PRINTER MANAGER] База даних ще не створена. Очікуємо ініціалізації при старті сервера.", flush=True)
+            return
+
+        try:
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, name, type, host, port, api_key FROM printers")
+            rows = cursor.fetchall()
+            conn.close()
+
+            for row in rows:
+                p_id, name, p_type, host, port, api_key = row
+                self.start_printer_client(p_id, p_type, host, port, api_key)
+                
+            print(f"[PRINTER MANAGER] Успішно запущено клієнтів: {len(self.clients)}", flush=True)
+        except sqlite3.OperationalError as e:
+            print(f"[PRINTER MANAGER WARNING] Спроба зчитування не вдалася (можливо база ще чиста): {e}", flush=True)
+
+    def start_printer_client(self, p_id: int, p_type: str, host: str, port: int, api_key: str):
+        if p_type == "klipper":
+            client = KlipperClient(host=host, port=port)
+        elif p_type == "octoprint":
+            client = OctoPrintClient(host=host, port=port, api_key=api_key)
+        elif p_type == "reprap":
+            # Для RepRap api_key виступає в ролі пароля до плати (якщо він є)
+            client = RepRapClient(host=host, port=port, password=api_key)
+        else:
+            print(f"[PRINTER MANAGER ERROR] Невідомий тип принтера '{p_type}' для ID #{p_id}", flush=True)
+            return
+
+        self.clients[p_id] = client
+        task = asyncio.create_task(client.start_websocket_listener())
+        self.tasks[p_id] = task
+        print(f"[PRINTER MANAGER] Запущено фоновий таск для принтера #{p_id} ({p_type})", flush=True)
+
+    async def stop_printer_client(self, p_id: int):
+        if p_id in self.tasks:
+            self.tasks[p_id].cancel()
+            del self.tasks[p_id]
+        if p_id in self.clients:
+            if self.clients[p_id].active_ws:
+                await self.clients[p_id].active_ws.close()
+            del self.clients[p_id]
+        print(f"[PRINTER MANAGER] Роботу з принтером #{p_id} успішно зупинено.", flush=True)
+
+    async def shutdown(self):
+        for p_id in list(self.tasks.keys()):
+            await self.stop_printer_client(p_id)
+        print("[PRINTER MANAGER] Усі фонові таски успішно звільнено.", flush=True)
+</file>
+
+<file path="run.sh">
+#!/bin/bash
+
+# Скрипт автоматичного деплою для Abstract Spaghetti Syndicate
+
+echo "============================================="
+# 1. Завантажуємо свіжі зміни з GitHub
+echo "1. Оновлення коду з репозиторію..."
+git pull
+
+echo "============================================="
+# 2. Перезбираємо та запускаємо контейнер у фоновому режимі
+echo "2. Перезбирання та фоновий запуск Docker..."
+sudo docker compose up -d --build
+
+echo "============================================="
+# 3. Виводимо статус запущеного контейнера
+echo "3. Перевірка статусу контейнера..."
+sudo docker ps | grep printer-filament-manager
+
+echo "============================================="https://github.com/Abstract-Spaghetti-Syndicate/backend
+echo "🎉 Сервер успішно запущено та оновлено на порті 8010!"
+echo "👉 Відкрийте у браузері: http://localhost:8010"
+echo "============================================="
+</file>
+
+<file path="requirements.txt">
+fastapi
+uvicorn
+httpx
+websockets
+zeroconf
+email-validator
+</file>
+
+<file path="klipper_client.py">
+import asyncio
+import json
+import httpx
+import websockets
+from base_client import BasePrinterClient
+
+class KlipperClient(BasePrinterClient):
+    def __init__(self, host: str = "", port: int = 7125):
+        # Викликаємо конструктор батьківського класу BasePrinterClient
+        super().__init__(host, port)
+        if host:
+            self.set_host(host)
+        else:
+            self.host = ""
+            self.base_url = ""
+            self.ws_url = ""
+            print("[KLIPPER CLIENT] Ініціалізовано без хоста.")
+
+    def set_host(self, host: str):
+        self.host = host
+        self.base_url = f"http://{host}:{self.port}"
+        self.ws_url = f"ws://{host}:{self.port}/websocket"
+        print(f"[KLIPPER CLIENT] Встановлено хост: {self.host} (REST: {self.base_url}, WS: {self.ws_url})")
+
+    async def update_host_and_reconnect(self, new_host: str):
+        print(f"[KLIPPER CLIENT] Отримано запит на зміну хоста на: {new_host}")
+        self.set_host(new_host)
+        if self.active_ws:
+            print("[KLIPPER CLIENT] Закриваємо поточне з'єднання для перепідключення...")
+            await self.active_ws.close()
+        else:
+            print("[KLIPPER CLIENT] Активного з'єднання немає, очікуємо автоматичного підключення.")
+
+    async def get_all_configured_objects(self) -> list:
+        if not self.host:
+            return []
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{self.base_url}/printer/objects/list")
+                if response.status_code == 200:
+                    objects = response.json().get("result", {}).get("objects", [])
+                    print(f"[KLIPPER CLIENT] Виявлено {len(objects)} об'єктів для зчитування.")
+                    return objects
+        except Exception as e:
+            print(f"[KLIPPER CLIENT] Не вдалося зчитати список об'єктів: {e}")
+        return []
+
+    async def send_gcode(self, gcode: str) -> dict:
+        if not self.host:
+            return {"error": "No host configured"}
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.base_url}/printer/gcode/script",
+                    json={"script": gcode}
+                )
+                return response.json()
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def start_websocket_listener(self):
+        print("[KLIPPER CLIENT] Фоновий процес WebSocket-слухача запущено.")
+        while True:
+            if not self.host:
+                self.state["print_state"] = "not_configured"
+                self.is_connected = False
+                self.state["connected"] = False
+                await asyncio.sleep(5)
+                continue
+
+            try:
+                detected_objects = await self.get_all_configured_objects()
+                print(f"[KLIPPER CLIENT WS] Спроба підключення до {self.ws_url}...")
+                
+                async with websockets.connect(self.ws_url, open_timeout=5) as ws:
+                    self.active_ws = ws
+                    self.is_connected = True
+                    self.state["connected"] = True
+                    print("[KLIPPER CLIENT WS] УСПІШНО підключено!")
+
+                    # Динамічна підписка на всі виявлені об'єкти
+                    subscription_objects = {obj: None for obj in detected_objects} if detected_objects else {
+                        "extruder": None, "heater_bed": None, "print_stats": None
+                    }
+
+                    subscribe_message = {
+                        "jsonrpc": "2.0",
+                        "method": "printer.objects.subscribe",
+                        "params": {
+                            "objects": subscription_objects
+                        },
+                        "id": 1
+                    }
+                    await ws.send(json.dumps(subscribe_message))
+
+                    async for message in ws:
+                        data = json.loads(message)
+                        self._parse_websocket_message(data)
+
+            except Exception as e:
+                self.is_connected = False
+                self.active_ws = None
+                self.state["connected"] = False
+                self.state["print_state"] = "disconnected"
+                print(f"[KLIPPER CLIENT WS ERROR] Помилка: {type(e).__name__} - {e}")
+                print("[KLIPPER CLIENT WS] Повторна спроба підключення через 5 секунд...")
+                await asyncio.sleep(5)
+
+    def _parse_websocket_message(self, data: dict):
+        if "result" in data and "status" in data["result"]:
+            self._update_state(data["result"]["status"])
+        elif data.get("method") == "notify_status_update":
+            self._update_state(data["params"][0])
+
+    def _update_state(self, status: dict):
+        # 1. Записуємо "сирі" дані у raw_telemetry для нашого детального дебаг-монітора
+        for key, value in status.items():
+            if key not in self.state["raw_telemetry"]:
+                self.state["raw_telemetry"][key] = {}
+            if isinstance(value, dict):
+                self.state["raw_telemetry"][key].update(value)
+            else:
+                self.state["raw_telemetry"][key] = value
+
+        # 2. Мапимо основні дані в наш уніфікований стандарт
+        if "extruder" in status:
+            self.state["temps"]["extruder"]["current"] = status["extruder"].get("temperature", self.state["temps"]["extruder"]["current"])
+            self.state["temps"]["extruder"]["target"] = status["extruder"].get("target", self.state["temps"]["extruder"]["target"])
+            
+        if "heater_bed" in status:
+            self.state["temps"]["bed"]["current"] = status["heater_bed"].get("temperature", self.state["temps"]["bed"]["current"])
+            self.state["temps"]["bed"]["target"] = status["heater_bed"].get("target", self.state["temps"]["bed"]["target"])
+            
+        if "print_stats" in status:
+            self.state["print_state"] = status["print_stats"].get("state", self.state["print_state"])
+            
+        # Якщо увімкнено вентилятор обдування моделі
+        if "fan" in status:
+            self.state["fans"]["part_cooling"] = status["fan"].get("speed", 0.0) * 100
+
+        # Якщо Klipper має датчик температури камери (chamber)
+        for key, val in status.items():
+            if "temperature_sensor" in key and "chamber" in key.lower():
+                self.state["temps"]["chamber"]["current"] = val.get("temperature", self.state["temps"]["chamber"]["current"])
+
+        print(f"[KLIPPER CLIENT STATE UPDATE] Оновлено уніфікований стан: {self.state}", flush=True)
+</file>
+
+<file path="comand.txt">
+git add .
+git commit -m "chore: розкидав функції по папкам"
+git push origin main
+
+uvicorn main:app --reload      запуск сервака
+</file>
+
+<file path="templates/index.html">
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Unified Printer Hub (Secure Sessions)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 font-sans min-h-screen flex items-center justify-center">
+    
+    <!-- Блок Авторизації -->
+    <div id="auth-box" class="bg-gray-800 p-8 rounded-lg shadow-lg border border-gray-700 w-full max-w-md">
+        <h2 id="auth-title" class="text-2xl font-bold text-center text-blue-500 mb-2">Завантаження...</h2>
+        <p id="auth-subtitle" class="text-xs text-gray-400 text-center mb-6">Перевірка стану системи...</p>
+        
+        <form id="auth-form" onsubmit="handleAuth(event)" class="space-y-4">
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Email</label>
+                <input id="auth-email" type="email" required class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500 text-white">
+            </div>
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Пароль</label>
+                <input id="auth-password" type="password" required class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500 text-white">
+            </div>
+            <button id="auth-btn" type="submit" class="w-full bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold py-2.5 rounded transition">Увійти</button>
+        </form>
+    </div>
+
+    <!-- Головна Панель Керування -->
+    <div id="main-panel" class="container mx-auto p-6 max-w-4xl hidden self-start">
+        <header class="mb-8 flex justify-between items-center">
+            <div>
+                <h1 class="text-3xl font-extrabold text-blue-500">Abstract Spaghetti Syndicate</h1>
+                <p class="text-gray-400 text-xs">Безпечна панель моніторингу принтера</p>
+            </div>
+            <div>
+                <button onclick="handleLogout()" class="bg-gray-700 hover:bg-gray-600 text-white text-xs font-bold px-4 py-2 rounded transition">Вийти</button>
+            </div>
+        </header>
+
+        <!-- Основна Сітка -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <!-- Монітор -->
+            <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700 flex flex-col h-[550px]">
+                <h2 class="text-xl font-bold mb-4 border-b border-gray-700 pb-2">Монітор принтера</h2>
+                
+                <div class="flex-shrink-0 mb-4">
+                    <p class="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2">Оберіть активний принтер:</p>
+                    <div id="printer-tabs-container" class="flex flex-wrap gap-1.5 items-center"></div>
+                </div>
+
+                <div class="space-y-2 mb-3">
+                    <div class="flex justify-between items-center text-xs">
+                        <span class="text-gray-400">IP та система:</span>
+                        <span id="current-ip" class="font-mono text-blue-400 font-bold">...</span>
+                    </div>
+                    <div class="flex justify-between items-center text-xs">
+                        <span class="text-gray-400">Статус:</span>
+                        <span id="connection-status" class="inline-block px-2 py-0.5 rounded text-[10px] font-bold bg-gray-700 text-gray-300">...</span>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-3 mb-4">
+                    <div class="bg-gray-900 p-3 rounded text-center border border-gray-800">
+                        <p class="text-[10px] text-gray-500 font-bold uppercase">Екструдер</p>
+                        <p id="temp-extruder" class="text-xl font-extrabold text-red-500">0.0°C</p>
+                        <p id="target-extruder" class="text-[10px] text-gray-400">Ціль: 0°C</p>
+                    </div>
+                    <div class="bg-gray-900 p-3 rounded text-center border border-gray-800">
+                        <p class="text-[10px] text-gray-500 font-bold uppercase">Стіл</p>
+                        <p id="temp-bed" class="text-xl font-extrabold text-yellow-500">0.0°C</p>
+                        <p id="target-bed" class="text-[10px] text-gray-400">Ціль: 0°C</p>
+                    </div>
+                </div>
+
+                <p class="text-[11px] font-bold text-gray-400 mb-1.5 uppercase tracking-wider">Усі датчики обраної системи:</p>
+                <div id="dynamic-sensors-container" class="flex-1 overflow-y-auto space-y-2 pr-1 scrollbar-thin scrollbar-thumb-gray-700"></div>
+            </div>
+
+            <!-- Налаштування та пристрої -->
+            <div class="space-y-6">
+                <!-- Спосіб 1: Зберегти IP у базу -->
+                <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700">
+                    <h2 id="form-title" class="text-lg font-bold text-white mb-2">Спосіб 1: Зберегти IP у базу (SQLite)</h2>
+                    <p class="text-xs text-gray-400 mb-4">Оберіть систему вашого принтера та вкажіть його параметри.</p>
+                    
+                    <div class="space-y-3">
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1">Назва принтера:</label>
+                            <input id="manual-printer-name" type="text" placeholder="напр. Voron, Ender, My Octo" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500 text-white">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1">Оберіть систему принтера:</label>
+                            <select id="printer-type-select" onchange="togglePrinterTypeFields()" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500 text-white font-bold">
+                                <option value="klipper" selected>Klipper (Moonraker)</option>
+                                <option value="octoprint">OctoPrint (Marlin)</option>
+                                <option value="reprap">RepRapFirmware (Duet)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label id="ip-input-label" class="block text-xs text-gray-400 mb-1">IP-адреса або хост Klipper:</label>
+                            <input id="manual-ip-input" type="text" placeholder="напр. 192.168.1.115 або localhost" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500 text-mono text-white">
+                        </div>
+                        <div id="api-key-container" class="hidden">
+                            <label class="block text-xs text-gray-400 mb-1">OctoPrint API Key:</label>
+                            <input id="manual-api-key" type="password" placeholder="Вставте згенерований API-ключ" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500 text-mono text-white">
+                        </div>
+                        <button onclick="saveManualIP(null)" class="w-full bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold py-2 rounded transition">Зберегти налаштування</button>
+                    </div>
+                </div>
+
+                <!-- Пошук mDNS -->
+                <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700">
+                    <h2 class="text-lg font-bold text-white mb-2">Спосіб 2: Автоматичний пошук (mDNS)</h2>
+                    <button id="scan-btn" onclick="startScan()" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold py-2 px-4 rounded transition">🔍 Сканувати мережу</button>
+                    <div id="scan-results" class="mt-4 space-y-2 hidden">
+                        <p class="text-xs font-semibold text-gray-400 border-b border-gray-700 pb-1">Знайдені пристрої:</p>
+                        <div id="printers-list" class="max-h-40 overflow-y-auto space-y-2"></div>
+                    </div>
+                </div>
+
+                <!-- Імпорт зі Spoolman -->
+                <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700">
+                    <h2 class="text-lg font-bold text-white mb-2">Імпорт бази зі Spoolman</h2>
+                    <p class="text-xs text-gray-400 mb-4">Синхронізувати всіх виробників, філаменти та котушки з віддаленого сервера.</p>
+                    <div class="flex gap-2">
+                        <input id="spoolman-url-input" type="text" placeholder="напр. http://192.168.1.50:7912" class="bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm flex-1 focus:outline-none focus:border-blue-500 text-mono text-white">
+                        <button onclick="importFromSpoolman(this)" class="bg-purple-600 hover:bg-purple-500 text-white text-sm font-bold px-4 py-2 rounded transition">Імпортувати</button>
+                    </div>
+                </div>
+
+                <!-- Список активних сесій -->
+                <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700">
+                    <h2 class="text-lg font-bold text-white mb-1">Підключені пристрої</h2>
+                    <p class="text-xs text-gray-400 mb-4">Список ваших активних сесій на інших гаджетах.</p>
+                    <div id="sessions-list" class="space-y-2 max-h-44 overflow-y-auto pr-1"></div>
+                </div>
+            </div>
+        </div>
+
+       <!-- Склад інвентарю (Вкладки) -->
+        <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700 mt-6 relative">
+            <div class="flex justify-between items-center mb-4 border-b border-gray-700 pb-4">
+                <div>
+                    <h2 class="text-xl font-bold mb-1">Склад матеріалів</h2>
+                    <div class="flex gap-2">
+                        <button id="tab-btn-spools" onclick="switchInventoryTab('spools')" class="bg-blue-600 text-white px-3 py-1.5 rounded text-xs font-bold transition">Котушки</button>
+                        <button id="tab-btn-filaments" onclick="switchInventoryTab('filaments')" class="bg-gray-900 text-gray-400 hover:text-gray-200 px-3 py-1.5 rounded text-xs font-bold transition border border-gray-800">Філамент</button>
+                        <button id="tab-btn-vendors" onclick="switchInventoryTab('vendors')" class="bg-gray-900 text-gray-400 hover:text-gray-200 px-3 py-1.5 rounded text-xs font-bold transition border border-gray-800">Виробники</button>
+                        <button id="tab-btn-locations" onclick="switchInventoryTab('locations')" class="bg-gray-900 text-gray-400 hover:text-gray-200 px-3 py-1.5 rounded text-xs font-bold transition border border-gray-800">Місця</button>
+                    </div>
+                </div>
+                <!-- Кнопка додавання (змінюється динамічно) -->
+                <button id="crud-add-btn" onclick="openCrudModal()" class="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded text-xs font-bold transition shadow-lg flex items-center gap-1">
+                    ➕ <span id="crud-add-text">Додати котушку</span>
+                </button>
+            </div>
+
+            <!-- Контейнери для кожної вкладки -->
+            <div id="inventory-spools" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 max-h-96 overflow-y-auto pr-1"></div>
+            <div id="inventory-filaments" class="hidden grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 max-h-96 overflow-y-auto pr-1"></div>
+            <div id="inventory-vendors" class="hidden grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 max-h-96 overflow-y-auto pr-1"></div>
+            <div id="inventory-locations" class="hidden grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 max-h-96 overflow-y-auto pr-1"></div>
+        </div>
+
+<!-- МОДАЛЬНЕ ВІКНО CRUD (Додавання / Редагування) -->
+    <div id="crud-modal" class="fixed inset-0 bg-black/80 flex items-center justify-center z-50 hidden backdrop-blur-sm">
+        <div class="bg-gray-800 p-6 rounded-lg w-full max-w-md border border-gray-700 relative max-h-[90vh] overflow-y-auto shadow-2xl">
+            <button onclick="closeCrudModal()" class="absolute top-4 right-4 text-gray-400 hover:text-white text-xl leading-none">&times;</button>
+            <h3 id="crud-modal-title" class="text-xl font-bold mb-4 text-blue-400">Форма</h3>
+            <form id="crud-form" onsubmit="handleCrudSubmit(event)" class="space-y-3">
+                <!-- Поля генеруються динамічно через JS -->
+                <div id="crud-form-fields" class="space-y-3"></div>
+                
+                <div class="pt-4 flex justify-end gap-2 border-t border-gray-700 mt-4">
+                    <button type="button" onclick="closeCrudModal()" class="bg-gray-700 px-4 py-2 rounded text-sm font-bold text-white hover:bg-gray-600 transition">Скасувати</button>
+                    <button type="submit" id="crud-save-btn" class="bg-emerald-600 px-4 py-2 rounded text-sm font-bold text-white hover:bg-emerald-500 transition">Зберегти</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+
+    <!-- ПІДКЛЮЧАЄМО НАШІ РОЗДІЛЕНІ СКРИПТИ -->
+    <script src="/static/js/state.js"></script>
+    <script src="/static/js/crud.js"></script>
+    <script src="/static/js/auth.js"></script>
+    <script src="/static/js/printers.js"></script>
+    <script src="/static/js/inventory.js"></script>
+    <script>
+        // Запуск логіки після завантаження всіх скриптів
+        checkAuthStatus();
+    </script>
+</body>
+</html>
+</file>
+
+<file path="main.py">
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
+from printer_manager import PrinterManager
+from core.database import init_db
+from routers import auth, printers, inventory, frontend
+
+# 1. Ініціалізуємо базу даних при старті
+init_db()
+
+# 2. Створюємо глобальний менеджер принтерів
+manager = PrinterManager()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Додаємо менеджер у стан додатку, щоб роутери могли до нього звертатися (request.app.state.manager)
+    app.state.manager = manager
+    # Запускаємо всі принтери з БД у фоновому режимі
+    manager.load_all_printers()
+    
+    yield # Тут сервер працює і приймає запити
+    
+    # Коли сервер вимикається, коректно зупиняємо всі фонові процеси
+    await manager.shutdown()
+
+# 3. Створюємо екземпляр FastAPI
+app = FastAPI(title="Secure Printer Gateway", lifespan=lifespan)
+
+# --- ДОДАЄМО ПАПКУ ЗІ СТАТИКОЮ ---
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# 4. Налаштовуємо CORS (дозволяємо запити з будь-яких джерел)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 5. Підключаємо наші розділені модулі (ендпоінти)
+app.include_router(frontend.router)
+app.include_router(auth.router)
+app.include_router(printers.router)
+app.include_router(inventory.router)
+</file>
+
+</files>

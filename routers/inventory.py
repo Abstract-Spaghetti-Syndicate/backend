@@ -17,13 +17,14 @@ def get_spools_list():
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
+        # ВИПРАВЛЕНО: Використовуємо LEFT JOIN, щоб показувати котушки навіть без виробника!
         cursor.execute("""
             SELECT spool.id, vendor.name, filament.name, filament.material, 
                    COALESCE(spool.initial_weight, filament.weight, 1000.0) AS initial, 
                    spool.used_weight, filament.color_hex
             FROM spool
-            JOIN filament ON spool.filament_id = filament.id
-            JOIN vendor ON filament.vendor_id = vendor.id
+            LEFT JOIN filament ON spool.filament_id = filament.id
+            LEFT JOIN vendor ON filament.vendor_id = vendor.id
             WHERE spool.archived = 0 ORDER BY spool.id DESC
         """)
         rows = cursor.fetchall()

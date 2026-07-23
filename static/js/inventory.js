@@ -179,7 +179,7 @@ async function importFromSpoolman(btn) {
         if (!response.ok) return alert("Помилка імпорту");
         const result = await response.json();
         if (result.status === "success") {
-            alert(`Успішно імпортовано:\n- Виробників: ${result.imported.vendors}\n- Пластику: ${result.imported.filaments}\n- Котушок: ${result.imported.spools}`);
+            alert(`Успішно імпортовано:\n- Виробників: ${result.imported.vendors}\n- Пластику: ${result.imported.filaments}\n- Котушок: ${result.imported.spools}\n- Місць: ${result.imported.locations}`);
             switchInventoryTab('spools');
         }
     } catch (e) { alert("Помилка з'єднання з сервером."); } 
